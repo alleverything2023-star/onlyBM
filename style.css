@@ -177,6 +177,11 @@ body{
 }
 .enchcell input:focus{border-color:var(--violet-soft);}
 
+/* 闇市入力：価格入力の右に利益率を表示 */
+.enchcell-inputrow{display:flex;align-items:center;gap:3px;}
+.enchcell-inputrow input{flex:1;min-width:0;}
+.ratelabel{font-size:9.5px;font-weight:800;white-space:nowrap;min-width:28px;text-align:left;}
+
 /* ===== 種類（subtype）ピッカー ===== */
 .subtyperow{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;}
 .subtypeicon{
@@ -212,6 +217,11 @@ body{
 .plantable th:first-child, .plantable td:first-child{text-align:left;}
 .plantable td{padding:8px 10px;border-bottom:1px solid #1e1a2a;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .plantable tr:hover{background:#161225;}
+.ratio-input{
+  width:48px;background:#100d18;border:1px solid var(--border);color:var(--text);
+  padding:4px 5px;border-radius:6px;font-size:12px;text-align:center;outline:none;margin-right:2px;
+}
+.ratio-input:focus{border-color:var(--violet-soft);}
 .plan-item{display:flex;align-items:center;gap:8px;}
 .plan-item img{width:26px;height:26px;object-fit:contain;flex-shrink:0;}
 .plan-item .pname{color:var(--text);}
