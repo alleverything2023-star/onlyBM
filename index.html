@@ -73,7 +73,8 @@
     <div class="main main-wide">
       <div class="note" style="margin-bottom:14px;">
         闇市（ブラックマーケット）で実際に確認できる<b>買い取り価格</b>を、ティア・補正段階ごとに入力してください。
-        入力した売値は「計画」タブでの利益計算に使われます。入力欄は<b>Enterキーで次へ</b>移動できます。
+        入力欄の右には、その時点の原価・税率から計算した<b>利益率</b>が表示されます（黒字が大きいほど明るい緑、赤字が大きいほど明るい赤）。
+        入力欄は<b>Enterキーで次へ</b>移動できます。
       </div>
       <div class="searchrow"><input type="text" id="bmSearch" placeholder="装備名で検索…（例: Broadsword, Bow）"></div>
       <div class="subtyperow" id="bmSubtypeRow"></div>
@@ -85,11 +86,12 @@
 <!-- ============ PAGE: 販売数入力（1日の消化数） ============ -->
 <div class="page" id="page-volume">
   <div class="layout">
-    <div class="sidebar"><h4>装備カテゴリ</h4><div id="volCategoryList"></div></div>
+    <div class="sidebar"><h4>グループ</h4><div id="volCategoryList"></div></div>
     <div class="main main-wide">
       <div class="note" style="margin-bottom:14px;">
         闇市の「28日間（28 Days）」グラフを開き、直近1〜2週間の<b>1日あたりの実売却数（Daily Volume）の平均</b>をここに入力してください。
-        「計画」タブでは、この個数の<b>15%</b>を安全な出品数の目安として自動計算します。入力欄は<b>Enterキーで次へ</b>移動できます。
+        1品ずつではなく、<b>片手武器・両手武器・頭/靴防具・胴防具・オフハンド</b>の5グループで大まかにまとめて入力できます。
+        「計画」タブでは、この個数に出品比率（初期値15%）を掛けた数を推奨作成数として自動計算します。入力欄は<b>Enterキーで次へ</b>移動できます。
       </div>
       <div class="searchrow"><input type="text" id="volSearch" placeholder="装備名で検索…（例: Broadsword, Bow）"></div>
       <div class="subtyperow" id="volSubtypeRow"></div>
@@ -102,9 +104,9 @@
 <div class="page" id="page-plan">
   <div class="main" style="max-width:1300px;">
     <div class="note" style="margin-bottom:14px;">
-      「闇市入力」で売値、「販売数入力」で1日の消化数を登録した装備（T4〜T8 / .0〜.2）を一覧表示します。
-      <b>1日の推奨出品数 ＝ 1日の消化数 × 15%</b>（小数点以下切り捨て）。これに下の「生産日数」を掛けた数が実際の推奨作成数です。
-      原価は「原価入力」の素材単価から自動計算されるため、未入力の素材があるティア・補正段階は原価が0として計算されます。
+      「原価入力」の素材単価と「闇市入力」の売値が<b>両方そろっている</b>組み合わせ（T4〜T8 / .0〜.2）だけを一覧表示します。
+      <b>推奨作成数 ＝ 1日の消化数 × 出品比率（初期値15%） × 生産日数</b>（小数点以下切り捨て）。
+      出品比率は利益率が高い装備ほど数ポイント上げるなど、行ごとに調整できます。
     </div>
     <div class="plansummary" id="planSummary"></div>
     <div class="settingsbar-row" style="margin:14px 0;">
