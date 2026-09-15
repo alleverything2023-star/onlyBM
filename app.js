@@ -119,6 +119,46 @@ function setVolume(itemId, tier, ench, val){
   saveState();
 }
 
+/* ---------------------------------------------------------------------
+   販売数（Volume）は 頭・胴・足防具について、素材種別（プレート/レザー/クロス）
+   ごとに複数装備をまとめて1つの数値で管理する（武器・オフハンドは装備ごとのまま）。
+--------------------------------------------------------------------- */
+const VOL_UNIFY_CATEGORIES = new Set(['head','chest','foot']);
+function volumeKeyForItem(item){
+  return VOL_UNIFY_CATEGORIES.has(item.category)
+    ? ('vgroup:' + item.category + ':' + item.subtype)
+    : item.id;
+}
+// 旧バージョン（装備ごとの個別入力）で保存されたデータを、統一後のグループキーへ移行する
+function migrateVolumesToGroups(){
+  const old = state.volumes || {};
+  const migrated = {};
+  let changed = false;
+  ITEMS.forEach(item=>{
+    if(!VOL_UNIFY_CATEGORIES.has(item.category)) return;
+    const rec = old[item.id];
+    if(!rec) return;
+    changed = true;
+    const gkey = volumeKeyForItem(item);
+    migrated[gkey] = migrated[gkey] || {};
+    Object.keys(rec).forEach(k=>{
+      const v = rec[k];
+      if(v && (!migrated[gkey][k] || v > migrated[gkey][k])) migrated[gkey][k] = v;
+    });
+  });
+  if(!changed) return;
+  const newVolumes = {};
+  Object.keys(old).forEach(k=>{
+    const itm = ITEMS.find(i=>i.id===k);
+    if(itm && VOL_UNIFY_CATEGORIES.has(itm.category)) return; // 旧・装備ごとの値は破棄（統合済み）
+    newVolumes[k] = old[k];
+  });
+  Object.assign(newVolumes, migrated);
+  state.volumes = newVolumes;
+  saveState();
+}
+migrateVolumesToGroups();
+
 function getInventoryQty(city, matId, tier, ench){
   return (state.inventory[city] && state.inventory[city][matId] && state.inventory[city][matId][key(tier,ench)]) || 0;
 }
@@ -534,6 +574,34 @@ function makeVolumeTab(opts){
     });
   }
 
+  // 頭・胴・足防具は「素材種別（プレート/レザー/クロス）」単位でまとめ、
+  // それ以外（武器・オフハンド）は装備ごとのまま、表示単位（カード1枚）のリストを作る
+  function buildDisplayUnits(items){
+    const seen = new Set();
+    const units = [];
+    items.forEach(item=>{
+      if(VOL_UNIFY_CATEGORIES.has(item.category)){
+        const gkey = volumeKeyForItem(item);
+        if(seen.has(gkey)) return;
+        seen.add(gkey);
+        const groupItems = itemsInSubtype(item.category, item.subtype);
+        const catLabel = (CATS.find(c=>c.id===item.category) || {}).label || item.category;
+        const subLabel = SUBTYPE_LABELS[item.subtype] || item.subtype;
+        const names = groupItems.map(i=>i.name).join(' / ');
+        units.push({
+          id: gkey,
+          name: `${catLabel}（${subLabel}）：${names}`,
+          file: groupItems[0].file,
+        });
+      }else{
+        if(seen.has(item.id)) return;
+        seen.add(item.id);
+        units.push(item);
+      }
+    });
+    return units;
+  }
+
   function renderGrid(){
     const panel = document.getElementById(opts.gridPanelId);
     panel.innerHTML = '';
@@ -553,7 +621,7 @@ function makeVolumeTab(opts){
     if(items.length === 0){
       wrap.innerHTML = '<div class="empty-hint">該当する装備がありません。</div>';
     }else{
-      items.forEach(item=> wrap.appendChild(buildEquipCard(item, opts)));
+      buildDisplayUnits(items).forEach(unit=> wrap.appendChild(buildEquipCard(unit, opts)));
     }
     panel.appendChild(wrap);
   }
@@ -587,7 +655,7 @@ function buildPlanRows(){
         const cost = computeCost(item, tier, ench, city);
         // 原価・売値の両方が入力されている組み合わせのみ対象
         if(sell <= 0 || cost <= 0) return;
-        const volume = getVolume(item.id, tier, ench);
+        const volume = getVolume(volumeKeyForItem(item), tier, ench);
         const ratio = getSellRatio(item.id, tier, ench);
         const net = sell * (1 - tax/100);
         const profitUnit = net - cost;
