@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>闇市出品プランナー | Albion Black Market</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="appbar">
+  <div class="brand">
+    <div class="logo">闇</div>
+    <div class="brand-text"><b>闇市出品プランナー</b><span>Black Market Sell Planner</span></div>
+  </div>
+  <div class="tabbar">
+    <button class="tabbtn active" data-page="cost"><span class="dot"></span>原価入力</button>
+    <button class="tabbtn" data-page="bm"><span class="dot"></span>闇市入力</button>
+    <button class="tabbtn" data-page="volume"><span class="dot"></span>販売数入力</button>
+    <button class="tabbtn" data-page="plan"><span class="dot"></span>計画</button>
+    <button class="tabbtn" data-page="settings"><span class="dot"></span>設定</button>
+  </div>
+  <div class="appbar-right">
+    <div class="pill">標準都市 <b id="hdrCity">—</b></div>
+    <div class="pill">税率 <b id="hdrTax">—</b></div>
+    <button class="btn" id="exportBtn" title="データをJSONファイルとして保存">エクスポート</button>
+    <button class="btn" id="importBtn" title="他の端末で書き出したJSONファイルを読み込む">インポート</button>
+    <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;">
+    <button class="btn" id="resetBtn">リセット</button>
+  </div>
+</div>
+
+<!-- ============ PAGE: 原価入力（精製素材の単価） ============ -->
+<div class="page active" id="page-cost">
+  <div class="main" style="max-width:1100px;">
+    <div class="note">
+      ここでは<b>精製素材（Plank / Steel / Leather / Cloth）の単価</b>を、下の「標準都市」欄で入力します。
+      装備1個あたりの原価は、この単価と各装備のレシピ（必要素材数）から自動計算されます。
+      対象はアーティファクトを必要としない装備のみ（闇市はアーティファクト・ケープを買い取らないため）、
+      ティアは T4〜T8、補正は .0〜.2 のみを扱います。データはこの端末のブラウザにのみ保存されます。
+    </div>
+    <div class="field" style="max-width:320px;margin:14px 0 18px;">
+      <label>価格を入力する都市（＝標準都市。変更は「設定」タブから）</label>
+      <div class="citydisplay" id="costCityDisplay">—</div>
+    </div>
+    <div class="pricegrid" id="matGrid"></div>
+  </div>
+</div>
+
+<!-- ============ PAGE: 闇市入力（装備ごとのBM売値） ============ -->
+<div class="page" id="page-bm">
+  <div class="layout">
+    <div class="sidebar"><h4>装備カテゴリ</h4><div id="bmCategoryList"></div></div>
+    <div class="main main-wide">
+      <div class="note" style="margin-bottom:14px;">
+        闇市（ブラックマーケット）で実際に確認できる<b>買い取り価格</b>を、ティア・補正段階ごとに入力してください。
+        入力した売値は「計画」タブでの利益計算に使われます。
+      </div>
+      <div class="searchrow"><input type="text" id="bmSearch" placeholder="装備名で検索…（例: Broadsword, Bow）"></div>
+      <div class="subtyperow" id="bmSubtypeRow"></div>
+      <div id="bmGridPanel"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PAGE: 販売数入力（1日の消化数） ============ -->
+<div class="page" id="page-volume">
+  <div class="layout">
+    <div class="sidebar"><h4>装備カテゴリ</h4><div id="volCategoryList"></div></div>
+    <div class="main main-wide">
+      <div class="note" style="margin-bottom:14px;">
+        闇市の「28日間（28 Days）」グラフを開き、直近1〜2週間の<b>1日あたりの実売却数（Daily Volume）の平均</b>をここに入力してください。
+        「計画」タブでは、この個数の<b>15%</b>を安全な出品数の目安として自動計算します。
+      </div>
+      <div class="searchrow"><input type="text" id="volSearch" placeholder="装備名で検索…（例: Broadsword, Bow）"></div>
+      <div class="subtyperow" id="volSubtypeRow"></div>
+      <div id="volGridPanel"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ PAGE: 計画（出品数・利益の一覧） ============ -->
+<div class="page" id="page-plan">
+  <div class="main" style="max-width:1300px;">
+    <div class="note" style="margin-bottom:14px;">
+      「闇市入力」で売値、「販売数入力」で1日の消化数を登録した装備（T4〜T8 / .0〜.2）を一覧表示します。
+      <b>推奨出品数 ＝ 1日の消化数 × 15%</b>（小数点以下切り捨て）。値崩れさせずに売り切るための目安です。
+      原価は「原価入力」の素材単価から自動計算されるため、未入力の素材があるティア・補正段階は原価が0として計算されます。
+    </div>
+    <div class="plansummary" id="planSummary"></div>
+    <div class="settingsbar-row" style="margin:14px 0;">
+      <div class="field" style="max-width:170px;">
+        <label>カテゴリ</label>
+        <select id="planCategory"><option value="">すべて</option></select>
+      </div>
+      <div class="field" style="max-width:130px;">
+        <label>ティア</label>
+        <select id="planTier"><option value="">すべて</option></select>
+      </div>
+      <div class="field" style="max-width:150px;">
+        <label>並び替え</label>
+        <select id="planSort">
+          <option value="profitTotal">合計利益が高い順</option>
+          <option value="profitUnit">個あたり利益が高い順</option>
+          <option value="volume">1日の消化数が多い順</option>
+          <option value="qty">推奨出品数が多い順</option>
+        </select>
+      </div>
+      <div class="field" style="flex:1;min-width:180px;">
+        <label>装備名で検索</label>
+        <input type="text" id="planSearch" placeholder="例: Broadsword">
+      </div>
+    </div>
+    <div id="planTableWrap"></div>
+  </div>
+</div>
+
+<!-- ============ PAGE: 設定 ============ -->
+<div class="page" id="page-settings">
+  <div class="main" style="max-width:640px;">
+    <div class="card">
+      <h3>標準都市</h3>
+      <p class="sub">「原価入力」で素材単価を入力・参照する都市です。素材の仕入れ値は都市ごとに違うため、いつも素材を買っている（または基準にしたい）都市を選んでください。</p>
+      <div class="field" style="max-width:260px;">
+        <select id="settingsCity"></select>
+      </div>
+    </div>
+    <div class="card">
+      <h3>プレミアム</h3>
+      <p class="sub">闇市での売却は出品手数料（2.5%）はかからず、取引税のみが引かれます。プレミアム加入中は税率4%、未加入は8%です。</p>
+      <label class="minitoggle">
+        <input type="checkbox" id="settingsPremium">
+        <span class="slider"></span>
+        <span class="mtlabel">プレミアムに加入している</span>
+      </label>
+    </div>
+  </div>
+</div>
+
+<script src="items_data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

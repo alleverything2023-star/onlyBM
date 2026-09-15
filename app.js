@@ -1,0 +1,492 @@
+/* ==========================================================================
+   闇市出品プランナー（Black Market Sell Planner）
+   craftguide-main の「原価入力」からアーティファクト装備を除いた部分だけを
+   引き継ぎ、闇市（Black Market）での出品計画に特化させた単独ツール。
+   ========================================================================== */
+
+const CATS = [
+  {id:'weapon', label:'武器',       ic:'⚔️'},
+  {id:'head',   label:'頭防具',     ic:'🪖'},
+  {id:'chest',  label:'胴防具',     ic:'👕'},
+  {id:'foot',   label:'足防具',     ic:'👢'},
+  {id:'offhand',label:'オフハンド', ic:'🛡️'},
+];
+
+const MATERIALS = [
+  {id:'plank',   label:'木材 (Plank)'},
+  {id:'steel',   label:'鋼 (Steel)'},
+  {id:'leather', label:'革 (Leather)'},
+  {id:'cloth',   label:'布 (Cloth)'},
+];
+
+const TIERS = [4,5,6,7,8];
+const ENCH  = [0,1,2]; // 闇市プランナーでは .0〜.2 のみ扱う
+
+const SUBTYPE_ORDER = {
+  weapon: ['sword','axe','mace','hammer','fist','crossbow','bow','spear',
+           'naturestaff','dagger','quarterstaff',
+           'firestaff','holystaff','arcanestaff','froststaff','cursedstaff'],
+  head:  ['plate','leather','cloth'],
+  chest: ['plate','leather','cloth'],
+  foot:  ['plate','leather','cloth'],
+  offhand: ['shield','torch','tome'],
+};
+
+const SUBTYPE_LABELS = {
+  sword:'ソード', axe:'アックス', mace:'メイス', hammer:'ハンマー',
+  fist:'フィスト', crossbow:'クロスボウ', bow:'ボウ', spear:'スピア',
+  naturestaff:'ネイチャースタッフ', dagger:'ダガー', quarterstaff:'クォータースタッフ',
+  firestaff:'ファイアスタッフ', holystaff:'ホーリースタッフ', arcanestaff:'アルケインスタッフ',
+  froststaff:'フロストスタッフ', cursedstaff:'カースドスタッフ',
+  plate:'プレート', leather:'レザー', cloth:'クロス',
+  shield:'シールド', torch:'トーチ', tome:'魔導書',
+};
+
+const CITIES = ['Martlock', 'Thetford', 'FortSterling', 'Lymhurst', 'Bridgewatch', 'Caerleon'];
+const CITY_LABELS_JA = {
+  Martlock:'マートロック', Thetford:'セットフォード', FortSterling:'フォートスターリング',
+  Lymhurst:'リムハースト', Bridgewatch:'ブリッジウォッチ', Caerleon:'カエルレオン',
+};
+
+function key(tier, ench){ return `T${tier}_${ench}`; }
+
+/* ---------------------------------------------------------------------
+   State (localStorage)
+--------------------------------------------------------------------- */
+const LS_KEY = 'bm_planner_state_v1';
+
+function defaultState(){
+  return {
+    settings:{ standardCity:'Lymhurst', premium:true },
+    matPrices:{},  // matPrices[city][materialId][T{tier}_{ench}] = price
+    bmPrices:{},   // bmPrices[itemId][T{tier}_{ench}] = price
+    volumes:{},    // volumes[itemId][T{tier}_{ench}] = 個/日
+  };
+}
+
+let state = loadState();
+
+function loadState(){
+  try{
+    const raw = localStorage.getItem(LS_KEY);
+    if(raw){
+      const data = JSON.parse(raw);
+      const merged = Object.assign(defaultState(), data);
+      merged.settings = Object.assign(defaultState().settings, data.settings || {});
+      merged.matPrices = data.matPrices || {};
+      merged.bmPrices = data.bmPrices || {};
+      merged.volumes = data.volumes || {};
+      return merged;
+    }
+  }catch(e){ console.error('state load failed', e); }
+  return defaultState();
+}
+
+function saveState(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
+  catch(e){ console.error('state save failed', e); }
+}
+
+function getMatPrice(city, matId, tier, ench){
+  return (state.matPrices[city] && state.matPrices[city][matId] && state.matPrices[city][matId][key(tier,ench)]) || 0;
+}
+function setMatPrice(city, matId, tier, ench, val){
+  state.matPrices[city] = state.matPrices[city] || {};
+  state.matPrices[city][matId] = state.matPrices[city][matId] || {};
+  state.matPrices[city][matId][key(tier,ench)] = val;
+  saveState();
+}
+
+function getBmPrice(itemId, tier, ench){
+  return (state.bmPrices[itemId] && state.bmPrices[itemId][key(tier,ench)]) || 0;
+}
+function setBmPrice(itemId, tier, ench, val){
+  state.bmPrices[itemId] = state.bmPrices[itemId] || {};
+  state.bmPrices[itemId][key(tier,ench)] = val;
+  saveState();
+}
+
+function getVolume(itemId, tier, ench){
+  return (state.volumes[itemId] && state.volumes[itemId][key(tier,ench)]) || 0;
+}
+function setVolume(itemId, tier, ench, val){
+  state.volumes[itemId] = state.volumes[itemId] || {};
+  state.volumes[itemId][key(tier,ench)] = val;
+  saveState();
+}
+
+function computeCost(item, tier, ench, city){
+  return MATERIALS.reduce((sum, m)=>{
+    const qty = item.materials[m.id] || 0;
+    if(qty <= 0) return sum;
+    return sum + qty * getMatPrice(city, m.id, tier, ench);
+  }, 0);
+}
+
+function taxRate(){ return state.settings.premium ? 4 : 8; }
+
+/* ---------------------------------------------------------------------
+   Tabs
+--------------------------------------------------------------------- */
+document.querySelectorAll('.tabbtn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('page-'+btn.dataset.page).classList.add('active');
+  });
+});
+
+/* ---------------------------------------------------------------------
+   Header pills
+--------------------------------------------------------------------- */
+function renderHeader(){
+  document.getElementById('hdrCity').textContent = CITY_LABELS_JA[state.settings.standardCity] || state.settings.standardCity;
+  document.getElementById('hdrTax').textContent = taxRate() + '%';
+}
+
+/* ---------------------------------------------------------------------
+   PAGE: 原価入力（精製素材の単価）
+--------------------------------------------------------------------- */
+function renderCostPage(){
+  document.getElementById('costCityDisplay').textContent = CITY_LABELS_JA[state.settings.standardCity] || state.settings.standardCity;
+  const grid = document.getElementById('matGrid');
+  grid.innerHTML = '';
+  const city = state.settings.standardCity;
+  MATERIALS.forEach(mat=>{
+    const col = document.createElement('div');
+    col.className = 'pricecol';
+    col.innerHTML = `<h5>${mat.label}</h5>`;
+    TIERS.forEach(tier=>{
+      const tg = document.createElement('div');
+      tg.className = 'tiergroup';
+      tg.innerHTML = `<div class="tiergroup-label">T${tier}</div>`;
+      const row = document.createElement('div');
+      row.className = 'enchrow';
+      ENCH.forEach(ench=>{
+        const cell = document.createElement('div');
+        cell.className = 'enchcell';
+        const val = getMatPrice(city, mat.id, tier, ench);
+        cell.innerHTML = `<span>.${ench}</span><input type="number" min="0" value="${val||''}" placeholder="0">`;
+        const input = cell.querySelector('input');
+        input.addEventListener('input', ()=>{
+          setMatPrice(city, mat.id, tier, ench, Number(input.value)||0);
+        });
+        row.appendChild(cell);
+      });
+      tg.appendChild(row);
+      col.appendChild(tg);
+    });
+    grid.appendChild(col);
+  });
+}
+
+/* ---------------------------------------------------------------------
+   共通: カテゴリ／種類ナビ + 装備ごとの入力グリッド
+   （闇市入力タブ・販売数入力タブで使い回す）
+--------------------------------------------------------------------- */
+function itemsInCategory(catId){
+  return ITEMS.filter(i=>i.category===catId);
+}
+function subtypesInCategory(catId){
+  const order = SUBTYPE_ORDER[catId] || [];
+  const present = new Set(itemsInCategory(catId).map(i=>i.subtype));
+  return order.filter(s=>present.has(s));
+}
+function itemsInSubtype(catId, subtype){
+  return ITEMS.filter(i=>i.category===catId && i.subtype===subtype);
+}
+function repImageForSubtype(catId, subtype){
+  const items = itemsInSubtype(catId, subtype);
+  return items.length ? items[0].file : '';
+}
+
+function makeInputTab(opts){
+  // opts: {catListId, subtypeRowId, gridPanelId, searchId, valueGetter, valueSetter}
+  const nav = { cat: CATS[0].id, subtype: null };
+
+  function renderCatList(){
+    const box = document.getElementById(opts.catListId);
+    box.innerHTML = '';
+    CATS.forEach(cat=>{
+      const count = itemsInCategory(cat.id).length;
+      if(count === 0) return;
+      const btn = document.createElement('button');
+      btn.className = 'catbtn' + (nav.cat===cat.id ? ' active' : '');
+      btn.innerHTML = `<span class="ic">${cat.ic}</span>${cat.label}<span class="catcount">${count}</span>`;
+      btn.addEventListener('click', ()=>{
+        nav.cat = cat.id;
+        nav.subtype = null;
+        document.getElementById(opts.searchId).value = '';
+        renderCatList(); renderSubtypeRow(); renderGrid();
+      });
+      box.appendChild(btn);
+    });
+  }
+
+  function renderSubtypeRow(){
+    const row = document.getElementById(opts.subtypeRowId);
+    row.innerHTML = '';
+    const subtypes = subtypesInCategory(nav.cat);
+    if(!nav.subtype || !subtypes.includes(nav.subtype)) nav.subtype = subtypes[0] || null;
+    subtypes.forEach(st=>{
+      const items = itemsInSubtype(nav.cat, st);
+      const icon = document.createElement('div');
+      icon.className = 'subtypeicon' + (nav.subtype===st ? ' active' : '');
+      icon.innerHTML = `<img src="${repImageForSubtype(nav.cat, st)}" alt="">
+        <span>${SUBTYPE_LABELS[st] || st}</span>
+        <span class="micount">${items.length}</span>`;
+      icon.addEventListener('click', ()=>{
+        nav.subtype = st;
+        document.getElementById(opts.searchId).value = '';
+        renderSubtypeRow(); renderGrid();
+      });
+      row.appendChild(icon);
+    });
+  }
+
+  function buildEquipCard(item){
+    const card = document.createElement('div');
+    card.className = 'equipcard';
+    let hasAny = false;
+    TIERS.forEach(t=>ENCH.forEach(e=>{ if(opts.valueGetter(item.id,t,e) > 0) hasAny = true; }));
+    card.innerHTML = `<h5><img class="colthumb" src="${item.file}" alt="">${item.name}${hasAny?'<span class="hasval">入力済み</span>':''}</h5>`;
+    TIERS.forEach(tier=>{
+      const tg = document.createElement('div');
+      tg.className = 'tiergroup';
+      tg.innerHTML = `<div class="tiergroup-label">T${tier}</div>`;
+      const row = document.createElement('div');
+      row.className = 'enchrow';
+      ENCH.forEach(ench=>{
+        const cell = document.createElement('div');
+        cell.className = 'enchcell';
+        const val = opts.valueGetter(item.id, tier, ench);
+        cell.innerHTML = `<span>.${ench}</span><input type="number" min="0" value="${val||''}" placeholder="0">`;
+        const input = cell.querySelector('input');
+        input.addEventListener('input', ()=>{
+          opts.valueSetter(item.id, tier, ench, Number(input.value)||0);
+        });
+        row.appendChild(cell);
+      });
+      tg.appendChild(row);
+      card.appendChild(tg);
+    });
+    return card;
+  }
+
+  function renderGrid(){
+    const panel = document.getElementById(opts.gridPanelId);
+    panel.innerHTML = '';
+    const q = document.getElementById(opts.searchId).value.trim().toLowerCase();
+    let items;
+    if(q){
+      items = ITEMS.filter(i=>i.name.toLowerCase().includes(q));
+    }else if(nav.subtype){
+      items = itemsInSubtype(nav.cat, nav.subtype);
+    }else{
+      items = [];
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'equipgridpanel';
+    if(items.length === 0){
+      wrap.innerHTML = '<div class="empty-hint">該当する装備がありません。</div>';
+    }else{
+      items.forEach(item=> wrap.appendChild(buildEquipCard(item)));
+    }
+    panel.appendChild(wrap);
+  }
+
+  document.getElementById(opts.searchId).addEventListener('input', renderGrid);
+
+  return { renderAll(){ renderCatList(); renderSubtypeRow(); renderGrid(); } };
+}
+
+const bmTab = makeInputTab({
+  catListId:'bmCategoryList', subtypeRowId:'bmSubtypeRow', gridPanelId:'bmGridPanel', searchId:'bmSearch',
+  valueGetter:getBmPrice, valueSetter:setBmPrice,
+});
+const volTab = makeInputTab({
+  catListId:'volCategoryList', subtypeRowId:'volSubtypeRow', gridPanelId:'volGridPanel', searchId:'volSearch',
+  valueGetter:getVolume, valueSetter:setVolume,
+});
+
+/* ---------------------------------------------------------------------
+   PAGE: 計画
+--------------------------------------------------------------------- */
+function fmt(n){ return Math.round(n).toLocaleString('ja-JP'); }
+
+function buildPlanRows(){
+  const city = state.settings.standardCity;
+  const tax = taxRate();
+  const rows = [];
+  ITEMS.forEach(item=>{
+    TIERS.forEach(tier=>{
+      ENCH.forEach(ench=>{
+        const sell = getBmPrice(item.id, tier, ench);
+        if(sell <= 0) return; // 闇市入力が済んでいる組み合わせのみ対象
+        const volume = getVolume(item.id, tier, ench);
+        const cost = computeCost(item, tier, ench, city);
+        const net = sell * (1 - tax/100);
+        const profitUnit = net - cost;
+        const qty = Math.floor(volume * 0.15);
+        const profitTotal = profitUnit * qty;
+        rows.push({item, tier, ench, sell, volume, cost, net, profitUnit, qty, profitTotal});
+      });
+    });
+  });
+  return rows;
+}
+
+function renderPlanFilters(){
+  const catSel = document.getElementById('planCategory');
+  if(catSel.options.length <= 1){
+    CATS.forEach(cat=>{
+      if(itemsInCategory(cat.id).length === 0) return;
+      const opt = document.createElement('option');
+      opt.value = cat.id; opt.textContent = cat.label;
+      catSel.appendChild(opt);
+    });
+  }
+  const tierSel = document.getElementById('planTier');
+  if(tierSel.options.length <= 1){
+    TIERS.forEach(t=>{
+      const opt = document.createElement('option');
+      opt.value = t; opt.textContent = 'T'+t;
+      tierSel.appendChild(opt);
+    });
+  }
+}
+
+function renderPlanPage(){
+  renderPlanFilters();
+  let rows = buildPlanRows();
+
+  const cat = document.getElementById('planCategory').value;
+  const tier = document.getElementById('planTier').value;
+  const q = document.getElementById('planSearch').value.trim().toLowerCase();
+  const sortKey = document.getElementById('planSort').value;
+
+  if(cat) rows = rows.filter(r=>r.item.category===cat);
+  if(tier) rows = rows.filter(r=>String(r.tier)===tier);
+  if(q) rows = rows.filter(r=>r.item.name.toLowerCase().includes(q));
+
+  const sorters = {
+    profitTotal:(a,b)=>b.profitTotal-a.profitTotal,
+    profitUnit:(a,b)=>b.profitUnit-a.profitUnit,
+    volume:(a,b)=>b.volume-a.volume,
+    qty:(a,b)=>b.qty-a.qty,
+  };
+  rows.sort(sorters[sortKey] || sorters.profitTotal);
+
+  // summary (フィルタ前の全登録データを対象に集計)
+  const allRows = buildPlanRows();
+  const totalProfit = allRows.reduce((s,r)=>s + r.profitTotal, 0);
+  document.getElementById('planSummary').innerHTML = `
+    <div class="sumcard"><span class="sk">売値を登録した組み合わせ</span><span class="sv">${allRows.length}</span></div>
+    <div class="sumcard"><span class="sk">推奨出品数の合計利益</span><span class="sv violet">${fmt(totalProfit)}</span></div>
+    <div class="sumcard"><span class="sk">標準都市 / 税率</span><span class="sv">${CITY_LABELS_JA[state.settings.standardCity]} / ${taxRate()}%</span></div>
+  `;
+
+  const wrap = document.getElementById('planTableWrap');
+  if(rows.length === 0){
+    wrap.innerHTML = '<div class="empty-hint">「闇市入力」で売値を登録すると、ここに計画が表示されます。</div>';
+    return;
+  }
+  let html = `<div class="tablewrap"><table class="plantable"><thead><tr>
+    <th>装備</th><th>原価</th><th>闇市売値</th><th>手取り(税引後)</th>
+    <th>1日の消化数</th><th>推奨出品数(15%)</th><th>個あたり利益</th><th>合計利益</th>
+  </tr></thead><tbody>`;
+  rows.forEach(r=>{
+    html += `<tr>
+      <td><div class="plan-item"><img src="${r.item.file}" alt="">
+        <span class="pname">${r.item.name}</span><span class="ptier">T${r.tier}.${r.ench}</span></div></td>
+      <td>${fmt(r.cost)}</td>
+      <td>${fmt(r.sell)}</td>
+      <td>${fmt(r.net)}</td>
+      <td>${fmt(r.volume)}</td>
+      <td class="plan-qty">${fmt(r.qty)}</td>
+      <td class="${r.profitUnit<0?'plan-profit neg':'plan-profit'}">${fmt(r.profitUnit)}</td>
+      <td class="${r.profitTotal<0?'plan-profit neg':'plan-profit'}">${fmt(r.profitTotal)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table></div>';
+  wrap.innerHTML = html;
+}
+
+['planCategory','planTier','planSort'].forEach(id=>{
+  document.getElementById(id).addEventListener('change', renderPlanPage);
+});
+document.getElementById('planSearch').addEventListener('input', renderPlanPage);
+
+/* ---------------------------------------------------------------------
+   PAGE: 設定
+--------------------------------------------------------------------- */
+function renderSettingsPage(){
+  const citySel = document.getElementById('settingsCity');
+  citySel.innerHTML = CITIES.map(c=>`<option value="${c}" ${c===state.settings.standardCity?'selected':''}>${CITY_LABELS_JA[c]}</option>`).join('');
+  citySel.onchange = ()=>{
+    state.settings.standardCity = citySel.value;
+    saveState();
+    renderHeader(); renderCostPage(); renderPlanPage();
+  };
+  const premCk = document.getElementById('settingsPremium');
+  premCk.checked = !!state.settings.premium;
+  premCk.onchange = ()=>{
+    state.settings.premium = premCk.checked;
+    saveState();
+    renderHeader(); renderPlanPage();
+  };
+}
+
+/* ---------------------------------------------------------------------
+   エクスポート／インポート／リセット
+--------------------------------------------------------------------- */
+document.getElementById('exportBtn').addEventListener('click', ()=>{
+  const blob = new Blob([JSON.stringify(state, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'bm_planner_data.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+document.getElementById('importBtn').addEventListener('click', ()=>{
+  document.getElementById('importFileInput').click();
+});
+document.getElementById('importFileInput').addEventListener('change', (e)=>{
+  const file = e.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const data = JSON.parse(reader.result);
+      state = Object.assign(defaultState(), data);
+      state.settings = Object.assign(defaultState().settings, data.settings || {});
+      saveState();
+      renderAllPages();
+      alert('インポートが完了しました。');
+    }catch(err){
+      alert('読み込みに失敗しました。正しいJSONファイルか確認してください。');
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  if(!confirm('すべてのデータ（素材単価・闇市売値・販売数・設定）を削除します。よろしいですか？')) return;
+  state = defaultState();
+  saveState();
+  renderAllPages();
+});
+
+/* ---------------------------------------------------------------------
+   初期描画
+--------------------------------------------------------------------- */
+function renderAllPages(){
+  renderHeader();
+  renderCostPage();
+  bmTab.renderAll();
+  volTab.renderAll();
+  renderPlanPage();
+  renderSettingsPage();
+}
+renderAllPages();
