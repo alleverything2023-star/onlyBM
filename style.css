@@ -255,3 +255,7 @@ body{
   .appbar{flex-wrap:wrap;}
   .tabbar{order:3;max-width:100%;}
 }
+
+/* Plan selection / RRR */
+.plan-select{width:18px;height:18px;accent-color:#7c3aed;}
+.plantable th,.plantable td{vertical-align:middle;}
