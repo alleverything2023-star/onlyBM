@@ -57,10 +57,11 @@ const LS_KEY = 'bm_planner_state_v1';
 
 function defaultState(){
   return {
-    settings:{ standardCity:'Lymhurst', premium:true },
+    settings:{ standardCity:'Lymhurst', premium:true, days:1 },
     matPrices:{},  // matPrices[city][materialId][T{tier}_{ench}] = price
     bmPrices:{},   // bmPrices[itemId][T{tier}_{ench}] = price
     volumes:{},    // volumes[itemId][T{tier}_{ench}] = 個/日
+    inventory:{},  // inventory[city][materialId][T{tier}_{ench}] = 所持数
   };
 }
 
@@ -76,6 +77,7 @@ function loadState(){
       merged.matPrices = data.matPrices || {};
       merged.bmPrices = data.bmPrices || {};
       merged.volumes = data.volumes || {};
+      merged.inventory = data.inventory || {};
       return merged;
     }
   }catch(e){ console.error('state load failed', e); }
@@ -115,6 +117,16 @@ function setVolume(itemId, tier, ench, val){
   saveState();
 }
 
+function getInventoryQty(city, matId, tier, ench){
+  return (state.inventory[city] && state.inventory[city][matId] && state.inventory[city][matId][key(tier,ench)]) || 0;
+}
+function setInventoryQty(city, matId, tier, ench, val){
+  state.inventory[city] = state.inventory[city] || {};
+  state.inventory[city][matId] = state.inventory[city][matId] || {};
+  state.inventory[city][matId][key(tier,ench)] = val;
+  saveState();
+}
+
 function computeCost(item, tier, ench, city){
   return MATERIALS.reduce((sum, m)=>{
     const qty = item.materials[m.id] || 0;
@@ -126,6 +138,27 @@ function computeCost(item, tier, ench, city){
 function taxRate(){ return state.settings.premium ? 4 : 8; }
 
 /* ---------------------------------------------------------------------
+   入力欄でEnterキーを押すと次の欄にフォーカスを移す（委譲イベントなので
+   グリッドを再描画しても効き続ける）
+--------------------------------------------------------------------- */
+function enableEnterNav(container){
+  if(!container) return;
+  container.addEventListener('keydown', (e)=>{
+    if(e.key !== 'Enter') return;
+    const t = e.target;
+    if(!t || t.tagName !== 'INPUT') return;
+    e.preventDefault();
+    const inputs = Array.from(container.querySelectorAll('input[type="number"]'));
+    const idx = inputs.indexOf(t);
+    if(idx > -1 && idx < inputs.length - 1){
+      const next = inputs[idx+1];
+      next.focus();
+      if(next.select) next.select();
+    }
+  });
+}
+
+/* ---------------------------------------------------------------------
    Tabs
 --------------------------------------------------------------------- */
 document.querySelectorAll('.tabbtn').forEach(btn=>{
@@ -134,6 +167,8 @@ document.querySelectorAll('.tabbtn').forEach(btn=>{
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('page-'+btn.dataset.page).classList.add('active');
+    // 計画タブは他タブでの入力を反映するため、開くたびに再計算する
+    if(btn.dataset.page === 'plan') renderPlanPage();
   });
 });
 
@@ -146,13 +181,11 @@ function renderHeader(){
 }
 
 /* ---------------------------------------------------------------------
-   PAGE: 原価入力（精製素材の単価）
+   PAGE: 原価入力（精製素材の単価・在庫）
 --------------------------------------------------------------------- */
-function renderCostPage(){
-  document.getElementById('costCityDisplay').textContent = CITY_LABELS_JA[state.settings.standardCity] || state.settings.standardCity;
-  const grid = document.getElementById('matGrid');
-  grid.innerHTML = '';
-  const city = state.settings.standardCity;
+// 汎用：素材×T4〜T8×.0〜.2 の入力グリッドを作る（単価グリッド・在庫グリッド共通）
+function buildMaterialGrid(container, valueGetter, valueSetter){
+  container.innerHTML = '';
   MATERIALS.forEach(mat=>{
     const col = document.createElement('div');
     col.className = 'pricecol';
@@ -166,20 +199,67 @@ function renderCostPage(){
       ENCH.forEach(ench=>{
         const cell = document.createElement('div');
         cell.className = 'enchcell';
-        const val = getMatPrice(city, mat.id, tier, ench);
+        const val = valueGetter(mat.id, tier, ench);
         cell.innerHTML = `<span>.${ench}</span><input type="number" min="0" value="${val||''}" placeholder="0">`;
         const input = cell.querySelector('input');
         input.addEventListener('input', ()=>{
-          setMatPrice(city, mat.id, tier, ench, Number(input.value)||0);
+          valueSetter(mat.id, tier, ench, Number(input.value)||0);
         });
         row.appendChild(cell);
       });
       tg.appendChild(row);
       col.appendChild(tg);
     });
-    grid.appendChild(col);
+    container.appendChild(col);
   });
 }
+
+function renderMatGrid(){
+  const city = state.settings.standardCity;
+  buildMaterialGrid(
+    document.getElementById('matGrid'),
+    (matId,t,e)=>getMatPrice(city,matId,t,e),
+    (matId,t,e,val)=>setMatPrice(city,matId,t,e,val)
+  );
+}
+
+function renderInvGrid(){
+  const city = state.settings.standardCity;
+  buildMaterialGrid(
+    document.getElementById('invGrid'),
+    (matId,t,e)=>getInventoryQty(city,matId,t,e),
+    (matId,t,e,val)=>{ setInventoryQty(city,matId,t,e,val); renderPlanPage(); }
+  );
+}
+
+function renderCostPage(){
+  document.getElementById('costCityDisplay').textContent = CITY_LABELS_JA[state.settings.standardCity] || state.settings.standardCity;
+  renderMatGrid();
+  renderInvGrid();
+}
+
+// 原価入力タブ内のサブタブ（素材単価／在庫）切り替え
+document.querySelectorAll('.subtabbtn[data-costsub]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.subtabbtn[data-costsub]').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('#page-cost .subpage').forEach(p=>p.style.display='none');
+    btn.classList.add('active');
+    document.getElementById('costsub-'+btn.dataset.costsub).style.display = '';
+  });
+});
+
+document.getElementById('clearInventoryBtn').addEventListener('click', ()=>{
+  const city = state.settings.standardCity;
+  const cityLabel = CITY_LABELS_JA[city] || city;
+  if(!confirm(`${cityLabel}の在庫データをすべて削除します。よろしいですか？`)) return;
+  delete state.inventory[city];
+  saveState();
+  renderInvGrid();
+  renderPlanPage();
+});
+
+enableEnterNav(document.getElementById('matGrid'));
+enableEnterNav(document.getElementById('invGrid'));
 
 /* ---------------------------------------------------------------------
    共通: カテゴリ／種類ナビ + 装備ごとの入力グリッド
@@ -309,6 +389,8 @@ const volTab = makeInputTab({
   catListId:'volCategoryList', subtypeRowId:'volSubtypeRow', gridPanelId:'volGridPanel', searchId:'volSearch',
   valueGetter:getVolume, valueSetter:setVolume,
 });
+enableEnterNav(document.getElementById('bmGridPanel'));
+enableEnterNav(document.getElementById('volGridPanel'));
 
 /* ---------------------------------------------------------------------
    PAGE: 計画
@@ -318,6 +400,7 @@ function fmt(n){ return Math.round(n).toLocaleString('ja-JP'); }
 function buildPlanRows(){
   const city = state.settings.standardCity;
   const tax = taxRate();
+  const days = Math.max(1, Number(state.settings.days) || 1);
   const rows = [];
   ITEMS.forEach(item=>{
     TIERS.forEach(tier=>{
@@ -328,13 +411,51 @@ function buildPlanRows(){
         const cost = computeCost(item, tier, ench, city);
         const net = sell * (1 - tax/100);
         const profitUnit = net - cost;
-        const qty = Math.floor(volume * 0.15);
+        const qtyPerDay = Math.floor(volume * 0.15);
+        const qty = qtyPerDay * days; // 「何日分作るか」は単純な掛け算
         const profitTotal = profitUnit * qty;
-        rows.push({item, tier, ench, sell, volume, cost, net, profitUnit, qty, profitTotal});
+        rows.push({item, tier, ench, sell, volume, cost, net, profitUnit, qtyPerDay, qty, profitTotal});
       });
     });
   });
   return rows;
+}
+
+// 表示中の行（rows）から、必要な素材数を在庫差し引き後の「買う量」として集計する
+function aggregateMaterials(rows){
+  const city = state.settings.standardCity;
+  const agg = {};
+  rows.forEach(r=>{
+    if(r.qty <= 0) return;
+    MATERIALS.forEach(m=>{
+      const perUnit = r.item.materials[m.id] || 0;
+      if(perUnit <= 0) return;
+      const k = m.id+'|'+r.tier+'|'+r.ench;
+      agg[k] = agg[k] || {matId:m.id, label:m.label, tier:r.tier, ench:r.ench, needed:0};
+      agg[k].needed += perUnit * r.qty;
+    });
+  });
+  return Object.values(agg).map(a=>{
+    const owned = getInventoryQty(city, a.matId, a.tier, a.ench);
+    const unitPrice = getMatPrice(city, a.matId, a.tier, a.ench);
+    const toBuy = Math.max(0, a.needed - owned);
+    return {...a, owned, toBuy, unitPrice, buyCost: toBuy*unitPrice};
+  }).sort((x,y)=> x.matId.localeCompare(y.matId) || x.tier-y.tier || x.ench-y.ench);
+}
+
+// 表示中の行（rows）を装備カテゴリごとにまとめる（作る量まとめ）
+function aggregateByCategory(rows){
+  const agg = {};
+  rows.forEach(r=>{
+    if(r.qty <= 0) return;
+    const c = r.item.category;
+    agg[c] = agg[c] || {category:c, items:new Set(), qty:0, profit:0};
+    agg[c].items.add(r.item.id);
+    agg[c].qty += r.qty;
+    agg[c].profit += r.profitTotal;
+  });
+  return Object.values(agg).map(a=>({...a, itemCount:a.items.size}))
+    .sort((x,y)=>y.profit-x.profit);
 }
 
 function renderPlanFilters(){
@@ -357,8 +478,59 @@ function renderPlanFilters(){
   }
 }
 
+function renderCategorySummary(rows){
+  const wrap = document.getElementById('planCategoryWrap');
+  const catAgg = aggregateByCategory(rows);
+  if(catAgg.length === 0){
+    wrap.innerHTML = '<div class="empty-hint">対象の装備がありません。</div>';
+    return;
+  }
+  const catLabel = {}; CATS.forEach(c=>catLabel[c.id]=c.label);
+  let html = `<div class="tablewrap"><table class="aggtable"><thead><tr>
+    <th>カテゴリ</th><th>品目数</th><th>合計作成数</th><th>合計利益</th>
+  </tr></thead><tbody>`;
+  catAgg.forEach(a=>{
+    html += `<tr>
+      <td>${catLabel[a.category] || a.category}</td>
+      <td>${fmt(a.itemCount)}</td>
+      <td class="plan-qty">${fmt(a.qty)}</td>
+      <td class="${a.profit<0?'plan-profit neg':'plan-profit'}">${fmt(a.profit)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table></div>';
+  wrap.innerHTML = html;
+}
+
+function renderMaterialsSummary(rows){
+  const wrap = document.getElementById('planMaterialsWrap');
+  const matAgg = aggregateMaterials(rows);
+  if(matAgg.length === 0){
+    wrap.innerHTML = '<div class="empty-hint">対象の装備がありません。</div>';
+    return;
+  }
+  const totalBuyCost = matAgg.reduce((s,a)=>s+a.buyCost, 0);
+  let html = `<div class="tablewrap"><table class="aggtable"><thead><tr>
+    <th>素材</th><th>ティア</th><th>必要数</th><th>在庫</th><th>購入数</th><th>単価</th><th>購入金額</th>
+  </tr></thead><tbody>`;
+  matAgg.forEach(a=>{
+    html += `<tr>
+      <td>${a.label}</td>
+      <td>T${a.tier}.${a.ench}</td>
+      <td>${fmt(a.needed)}</td>
+      <td>${fmt(a.owned)}</td>
+      <td class="plan-qty">${fmt(a.toBuy)}</td>
+      <td>${fmt(a.unitPrice)}</td>
+      <td>${fmt(a.buyCost)}</td>
+    </tr>`;
+  });
+  html += `</tbody><tfoot><tr><td colspan="6">購入金額 合計</td><td>${fmt(totalBuyCost)}</td></tr></tfoot></table></div>`;
+  wrap.innerHTML = html;
+}
+
 function renderPlanPage(){
   renderPlanFilters();
+  const daysInput = document.getElementById('planDays');
+  daysInput.value = state.settings.days || 1;
   let rows = buildPlanRows();
 
   const cat = document.getElementById('planCategory').value;
@@ -384,8 +556,11 @@ function renderPlanPage(){
   document.getElementById('planSummary').innerHTML = `
     <div class="sumcard"><span class="sk">売値を登録した組み合わせ</span><span class="sv">${allRows.length}</span></div>
     <div class="sumcard"><span class="sk">推奨出品数の合計利益</span><span class="sv violet">${fmt(totalProfit)}</span></div>
-    <div class="sumcard"><span class="sk">標準都市 / 税率</span><span class="sv">${CITY_LABELS_JA[state.settings.standardCity]} / ${taxRate()}%</span></div>
+    <div class="sumcard"><span class="sk">標準都市 / 税率 / 生産日数</span><span class="sv">${CITY_LABELS_JA[state.settings.standardCity]} / ${taxRate()}% / ${state.settings.days||1}日</span></div>
   `;
+
+  renderCategorySummary(rows);
+  renderMaterialsSummary(rows);
 
   const wrap = document.getElementById('planTableWrap');
   if(rows.length === 0){
@@ -394,7 +569,7 @@ function renderPlanPage(){
   }
   let html = `<div class="tablewrap"><table class="plantable"><thead><tr>
     <th>装備</th><th>原価</th><th>闇市売値</th><th>手取り(税引後)</th>
-    <th>1日の消化数</th><th>推奨出品数(15%)</th><th>個あたり利益</th><th>合計利益</th>
+    <th>1日の消化数</th><th>推奨作成数</th><th>個あたり利益</th><th>合計利益</th>
   </tr></thead><tbody>`;
   rows.forEach(r=>{
     html += `<tr>
@@ -417,6 +592,12 @@ function renderPlanPage(){
   document.getElementById(id).addEventListener('change', renderPlanPage);
 });
 document.getElementById('planSearch').addEventListener('input', renderPlanPage);
+document.getElementById('planDays').addEventListener('input', ()=>{
+  const v = Math.max(1, Number(document.getElementById('planDays').value) || 1);
+  state.settings.days = v;
+  saveState();
+  renderPlanPage();
+});
 
 /* ---------------------------------------------------------------------
    PAGE: 設定
@@ -472,7 +653,7 @@ document.getElementById('importFileInput').addEventListener('change', (e)=>{
   e.target.value = '';
 });
 document.getElementById('resetBtn').addEventListener('click', ()=>{
-  if(!confirm('すべてのデータ（素材単価・闇市売値・販売数・設定）を削除します。よろしいですか？')) return;
+  if(!confirm('すべてのデータ（素材単価・在庫・闇市売値・販売数・設定）を削除します。よろしいですか？')) return;
   state = defaultState();
   saveState();
   renderAllPages();
