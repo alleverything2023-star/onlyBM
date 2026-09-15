@@ -104,9 +104,9 @@
 <div class="page" id="page-plan">
   <div class="main" style="max-width:1300px;">
     <div class="note" style="margin-bottom:14px;">
-      「原価入力」の素材単価と「闇市入力」の売値が<b>両方そろっている</b>組み合わせ（T4〜T8 / .0〜.2）だけを一覧表示します。
-      <b>推奨作成数 ＝ 1日の消化数 × 出品比率（初期値15%） × 生産日数</b>（小数点以下切り捨て）。
-      出品比率は利益率が高い装備ほど数ポイント上げるなど、行ごとに調整できます。
+      「原価入力」の素材単価と「闇市入力」の売値が<b>両方そろっている</b>組み合わせ（T4〜T8 / .0〜.2）を候補として表示します。
+      <b>利益率の高い順</b>に並び、チェックした装備だけを1日分の計画に採用します。作成数は<b>そのアイテムの最高数＝1日の消化数 × 出品比率</b>（小数点以下切り捨て）です。
+      予算を入力すると、選択中の1日分の必要原価から「何日分作れるか」を逆算します。Focusは計算に使用しません。ボーナス都市ではRRRを原価に反映します。
     </div>
     <div class="plansummary" id="planSummary"></div>
     <div class="settingsbar-row" style="margin:14px 0;">
@@ -121,6 +121,7 @@
       <div class="field" style="max-width:150px;">
         <label>並び替え</label>
         <select id="planSort">
+          <option value="profitRate">利益率が高い順</option>
           <option value="profitTotal">合計利益が高い順</option>
           <option value="profitUnit">個あたり利益が高い順</option>
           <option value="volume">1日の消化数が多い順</option>
@@ -131,9 +132,9 @@
         <label>装備名で検索</label>
         <input type="text" id="planSearch" placeholder="例: Broadsword">
       </div>
-      <div class="field" style="max-width:180px;">
+      <div class="field" style="max-width:170px;">
         <label>予算（シルバー）</label>
-        <input type="number" id="planBudget" min="0" step="1000" value="0" placeholder="例: 1000000">
+        <input type="number" id="planBudget" min="0" step="1" placeholder="例: 1000000">
       </div>
     </div>
 
