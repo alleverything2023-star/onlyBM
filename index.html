@@ -32,7 +32,7 @@
   </div>
 </div>
 
-<!-- ============ PAGE: 原価入力（精製素材の単価） ============ -->
+<!-- ============ PAGE: 原価入力（精製素材の単価・在庫） ============ -->
 <div class="page active" id="page-cost">
   <div class="main" style="max-width:1100px;">
     <div class="note">
@@ -40,12 +40,29 @@
       装備1個あたりの原価は、この単価と各装備のレシピ（必要素材数）から自動計算されます。
       対象はアーティファクトを必要としない装備のみ（闇市はアーティファクト・ケープを買い取らないため）、
       ティアは T4〜T8、補正は .0〜.2 のみを扱います。データはこの端末のブラウザにのみ保存されます。
+      各入力欄は<b>Enterキーで次の欄へ</b>移動できます。
     </div>
     <div class="field" style="max-width:320px;margin:14px 0 18px;">
-      <label>価格を入力する都市（＝標準都市。変更は「設定」タブから）</label>
+      <label>価格・在庫を入力する都市（＝標準都市。変更は「設定」タブから）</label>
       <div class="citydisplay" id="costCityDisplay">—</div>
     </div>
-    <div class="pricegrid" id="matGrid"></div>
+
+    <div class="subtabs">
+      <button class="subtabbtn active" data-costsub="mat">素材単価</button>
+      <button class="subtabbtn" data-costsub="inv">在庫</button>
+    </div>
+
+    <div class="subpage" id="costsub-mat">
+      <div class="pricegrid" id="matGrid"></div>
+    </div>
+    <div class="subpage" id="costsub-inv" style="display:none;">
+      <div class="note" style="margin-bottom:14px;">
+        標準都市の倉庫にすでに持っている素材の在庫数を入力してください。「計画」タブの購入量まとめで、
+        必要数からこの在庫数が自動的に差し引かれます。
+      </div>
+      <button type="button" class="tinybtn" id="clearInventoryBtn" style="margin-bottom:14px;">🗑 この都市の在庫を一括削除</button>
+      <div class="pricegrid" id="invGrid"></div>
+    </div>
   </div>
 </div>
 
@@ -56,7 +73,7 @@
     <div class="main main-wide">
       <div class="note" style="margin-bottom:14px;">
         闇市（ブラックマーケット）で実際に確認できる<b>買い取り価格</b>を、ティア・補正段階ごとに入力してください。
-        入力した売値は「計画」タブでの利益計算に使われます。
+        入力した売値は「計画」タブでの利益計算に使われます。入力欄は<b>Enterキーで次へ</b>移動できます。
       </div>
       <div class="searchrow"><input type="text" id="bmSearch" placeholder="装備名で検索…（例: Broadsword, Bow）"></div>
       <div class="subtyperow" id="bmSubtypeRow"></div>
@@ -72,7 +89,7 @@
     <div class="main main-wide">
       <div class="note" style="margin-bottom:14px;">
         闇市の「28日間（28 Days）」グラフを開き、直近1〜2週間の<b>1日あたりの実売却数（Daily Volume）の平均</b>をここに入力してください。
-        「計画」タブでは、この個数の<b>15%</b>を安全な出品数の目安として自動計算します。
+        「計画」タブでは、この個数の<b>15%</b>を安全な出品数の目安として自動計算します。入力欄は<b>Enterキーで次へ</b>移動できます。
       </div>
       <div class="searchrow"><input type="text" id="volSearch" placeholder="装備名で検索…（例: Broadsword, Bow）"></div>
       <div class="subtyperow" id="volSubtypeRow"></div>
@@ -86,7 +103,7 @@
   <div class="main" style="max-width:1300px;">
     <div class="note" style="margin-bottom:14px;">
       「闇市入力」で売値、「販売数入力」で1日の消化数を登録した装備（T4〜T8 / .0〜.2）を一覧表示します。
-      <b>推奨出品数 ＝ 1日の消化数 × 15%</b>（小数点以下切り捨て）。値崩れさせずに売り切るための目安です。
+      <b>1日の推奨出品数 ＝ 1日の消化数 × 15%</b>（小数点以下切り捨て）。これに下の「生産日数」を掛けた数が実際の推奨作成数です。
       原価は「原価入力」の素材単価から自動計算されるため、未入力の素材があるティア・補正段階は原価が0として計算されます。
     </div>
     <div class="plansummary" id="planSummary"></div>
@@ -105,14 +122,31 @@
           <option value="profitTotal">合計利益が高い順</option>
           <option value="profitUnit">個あたり利益が高い順</option>
           <option value="volume">1日の消化数が多い順</option>
-          <option value="qty">推奨出品数が多い順</option>
+          <option value="qty">推奨作成数が多い順</option>
         </select>
       </div>
       <div class="field" style="flex:1;min-width:180px;">
         <label>装備名で検索</label>
         <input type="text" id="planSearch" placeholder="例: Broadsword">
       </div>
+      <div class="field" style="max-width:130px;">
+        <label>生産日数（単純倍率）</label>
+        <input type="number" id="planDays" min="1" value="1">
+      </div>
     </div>
+
+    <div class="card">
+      <h3>🛠 作る量まとめ（種類別）</h3>
+      <p class="sub">現在の絞り込み条件に一致する装備の、カテゴリごとの合計作成数・合計利益です。</p>
+      <div id="planCategoryWrap"></div>
+    </div>
+
+    <div class="card">
+      <h3>📦 買う量まとめ（素材・在庫差し引き後）</h3>
+      <p class="sub">上の作成数をまかなうのに必要な素材数から、「原価入力 &gt; 在庫」に登録した在庫数を差し引いた、実際に買うべき数量です。</p>
+      <div id="planMaterialsWrap"></div>
+    </div>
+
     <div id="planTableWrap"></div>
   </div>
 </div>
