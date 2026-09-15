@@ -120,40 +120,52 @@ function setVolume(itemId, tier, ench, val){
 }
 
 /* ---------------------------------------------------------------------
-   販売数（Volume）は 頭・胴・足防具について、素材種別（プレート/レザー/クロス）
-   ごとに複数装備をまとめて1つの数値で管理する（武器・オフハンドは装備ごとのまま）。
+   販売数（Volume）は 頭・足防具 をまとめて1つ、胴防具をまとめて1つの数値で
+   管理する（武器・オフハンドは装備ごとのまま）。
 --------------------------------------------------------------------- */
 const VOL_UNIFY_CATEGORIES = new Set(['head','chest','foot']);
 function volumeKeyForItem(item){
-  return VOL_UNIFY_CATEGORIES.has(item.category)
-    ? ('vgroup:' + item.category + ':' + item.subtype)
-    : item.id;
+  if(item.category === 'head' || item.category === 'foot') return 'vgroup:headfoot';
+  if(item.category === 'chest') return 'vgroup:chest';
+  return item.id;
 }
-// 旧バージョン（装備ごとの個別入力）で保存されたデータを、統一後のグループキーへ移行する
+// 旧バージョン（装備ごと／素材種別ごとの個別入力）で保存されたデータを、
+// 統一後のグループキー（vgroup:headfoot / vgroup:chest）へ移行する
 function migrateVolumesToGroups(){
   const old = state.volumes || {};
-  const migrated = {};
-  let changed = false;
-  ITEMS.forEach(item=>{
-    if(!VOL_UNIFY_CATEGORIES.has(item.category)) return;
-    const rec = old[item.id];
+  const groupTotals = { 'vgroup:headfoot': {}, 'vgroup:chest': {} };
+  const consumedKeys = new Set(['vgroup:headfoot', 'vgroup:chest']);
+
+  function mergeInto(gkey, rec){
     if(!rec) return;
-    changed = true;
-    const gkey = volumeKeyForItem(item);
-    migrated[gkey] = migrated[gkey] || {};
     Object.keys(rec).forEach(k=>{
       const v = rec[k];
-      if(v && (!migrated[gkey][k] || v > migrated[gkey][k])) migrated[gkey][k] = v;
+      if(v && (!groupTotals[gkey][k] || v > groupTotals[gkey][k])) groupTotals[gkey][k] = v;
+    });
+  }
+
+  // 既に新形式で保存済みの値を取り込む
+  mergeInto('vgroup:headfoot', old['vgroup:headfoot']);
+  mergeInto('vgroup:chest', old['vgroup:chest']);
+
+  // 装備ごと・旧「素材種別ごと」形式で残っている値を取り込む
+  ITEMS.forEach(item=>{
+    if(!VOL_UNIFY_CATEGORIES.has(item.category)) return;
+    const gkey = volumeKeyForItem(item);
+    const legacyKeys = [item.id, 'vgroup:' + item.category + ':' + item.subtype];
+    legacyKeys.forEach(k=>{
+      if(old[k]){ mergeInto(gkey, old[k]); consumedKeys.add(k); }
     });
   });
-  if(!changed) return;
+
   const newVolumes = {};
   Object.keys(old).forEach(k=>{
-    const itm = ITEMS.find(i=>i.id===k);
-    if(itm && VOL_UNIFY_CATEGORIES.has(itm.category)) return; // 旧・装備ごとの値は破棄（統合済み）
+    if(consumedKeys.has(k)) return;
     newVolumes[k] = old[k];
   });
-  Object.assign(newVolumes, migrated);
+  if(Object.keys(groupTotals['vgroup:headfoot']).length) newVolumes['vgroup:headfoot'] = groupTotals['vgroup:headfoot'];
+  if(Object.keys(groupTotals['vgroup:chest']).length) newVolumes['vgroup:chest'] = groupTotals['vgroup:chest'];
+
   state.volumes = newVolumes;
   saveState();
 }
@@ -476,8 +488,8 @@ const bmTab = makeInputTab({
 });
 
 /* ---------------------------------------------------------------------
-   販売数入力タブ：片手武器／両手武器／頭・靴防具／胴防具／オフハンド
-   の5グループでまとめて入力する
+   販売数入力タブ：片手武器／両手武器／防具（頭・胴・足）／オフハンド
+   の4グループでまとめて入力する
 --------------------------------------------------------------------- */
 // 基本武器（destiny盤の最初の分岐）のうち片手武器はこの13種のみ。
 // それ以外の武器（Great系・二刀流系・Pike/Glaive等）と、
@@ -489,44 +501,32 @@ const ONE_HANDED_WEAPON_NAMES = new Set([
 ]);
 
 const VOL_GROUPS = [
-  {id:'weapon1h', label:'片手武器',     ic:'🗡️'},
-  {id:'weapon2h', label:'両手武器',     ic:'⚔️'},
-  {id:'headfoot', label:'頭・靴防具',   ic:'🪖'},
-  {id:'chest',    label:'胴防具',       ic:'👕'},
-  {id:'offhand',  label:'オフハンド',   ic:'🛡️'},
+  {id:'weapon1h', label:'片手武器',           ic:'🗡️'},
+  {id:'weapon2h', label:'両手武器',           ic:'⚔️'},
+  {id:'armor',    label:'防具（頭・胴・足）', ic:'🛡️'},
+  {id:'offhand',  label:'オフハンド',         ic:'🛡️'},
 ];
 
 function volGroupOf(item){
   if(item.category === 'weapon'){
     return ONE_HANDED_WEAPON_NAMES.has(item.name) ? 'weapon1h' : 'weapon2h';
   }
-  if(item.category === 'head' || item.category === 'foot') return 'headfoot';
-  return item.category; // 'chest' or 'offhand'
+  if(item.category === 'head' || item.category === 'foot' || item.category === 'chest') return 'armor';
+  return item.category; // 'offhand'
 }
 function itemsInVolGroup(groupId){
   return ITEMS.filter(i=>volGroupOf(i)===groupId);
-}
-function volSubKey(item){
-  if(item.category==='head' || item.category==='foot') return item.category+':'+item.subtype;
-  return item.subtype;
-}
-function volSubLabel(item){
-  if(item.category==='head') return '頭:'+(SUBTYPE_LABELS[item.subtype]||item.subtype);
-  if(item.category==='foot') return '足:'+(SUBTYPE_LABELS[item.subtype]||item.subtype);
-  return SUBTYPE_LABELS[item.subtype] || item.subtype;
 }
 function volSubtypesInGroup(groupId){
   const items = itemsInVolGroup(groupId);
   let orderKeys;
   if(groupId==='weapon1h' || groupId==='weapon2h') orderKeys = SUBTYPE_ORDER.weapon.slice();
-  else if(groupId==='headfoot') orderKeys = ['head:plate','head:leather','head:cloth','foot:plate','foot:leather','foot:cloth'];
-  else if(groupId==='chest') orderKeys = SUBTYPE_ORDER.chest.slice();
-  else orderKeys = SUBTYPE_ORDER.offhand.slice();
+  else orderKeys = SUBTYPE_ORDER.offhand.slice(); // 'armor' はサブタイプ選択を使わないのでここには来ない
 
   const out = [];
   orderKeys.forEach(k=>{
-    const matches = items.filter(i=>volSubKey(i)===k);
-    if(matches.length) out.push({key:k, label:volSubLabel(matches[0]), items:matches});
+    const matches = items.filter(i=>i.subtype===k);
+    if(matches.length) out.push({key:k, label:SUBTYPE_LABELS[k]||k, items:matches});
   });
   return out;
 }
@@ -557,6 +557,11 @@ function makeVolumeTab(opts){
   function renderSubRow(){
     const row = document.getElementById(opts.subtypeRowId);
     row.innerHTML = '';
+    if(nav.group === 'armor'){
+      // 防具は頭・足／胴それぞれ1つにまとめて表示するので、サブタイプ選択自体を出さない
+      nav.subKey = null;
+      return;
+    }
     const subs = volSubtypesInGroup(nav.group);
     if(!nav.subKey || !subs.some(s=>s.key===nav.subKey)) nav.subKey = subs.length ? subs[0].key : null;
     subs.forEach(s=>{
@@ -574,8 +579,8 @@ function makeVolumeTab(opts){
     });
   }
 
-  // 頭・胴・足防具は「素材種別（プレート/レザー/クロス）」単位でまとめ、
-  // それ以外（武器・オフハンド）は装備ごとのまま、表示単位（カード1枚）のリストを作る
+  // 頭・足防具 → 1つ、胴防具 → 1つにまとめる。武器・オフハンドは装備ごとのまま。
+  // 表示単位（カード1枚）のリストを作る。
   function buildDisplayUnits(items){
     const seen = new Set();
     const units = [];
@@ -584,15 +589,7 @@ function makeVolumeTab(opts){
         const gkey = volumeKeyForItem(item);
         if(seen.has(gkey)) return;
         seen.add(gkey);
-        const groupItems = itemsInSubtype(item.category, item.subtype);
-        const catLabel = (CATS.find(c=>c.id===item.category) || {}).label || item.category;
-        const subLabel = SUBTYPE_LABELS[item.subtype] || item.subtype;
-        const names = groupItems.map(i=>i.name).join(' / ');
-        units.push({
-          id: gkey,
-          name: `${catLabel}（${subLabel}）：${names}`,
-          file: groupItems[0].file,
-        });
+        units.push(armorGroupPseudoItem(gkey));
       }else{
         if(seen.has(item.id)) return;
         seen.add(item.id);
@@ -602,6 +599,15 @@ function makeVolumeTab(opts){
     return units;
   }
 
+  function armorGroupPseudoItem(gkey){
+    if(gkey === 'vgroup:headfoot'){
+      const members = ITEMS.filter(i=>i.category==='head' || i.category==='foot');
+      return { id: gkey, name: `頭・足防具（頭防具＋足防具 全${members.length}種をまとめて入力）`, file: members[0].file };
+    }
+    const members = ITEMS.filter(i=>i.category==='chest');
+    return { id: gkey, name: `胴防具（全${members.length}種をまとめて入力）`, file: members[0].file };
+  }
+
   function renderGrid(){
     const panel = document.getElementById(opts.gridPanelId);
     panel.innerHTML = '';
@@ -609,6 +615,8 @@ function makeVolumeTab(opts){
     let items;
     if(q){
       items = ITEMS.filter(i=>i.name.toLowerCase().includes(q));
+    }else if(nav.group === 'armor'){
+      items = itemsInVolGroup('armor');
     }else if(nav.subKey){
       const subs = volSubtypesInGroup(nav.group);
       const found = subs.find(s=>s.key===nav.subKey);
