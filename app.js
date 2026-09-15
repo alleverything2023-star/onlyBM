@@ -62,6 +62,7 @@ function defaultState(){
     bmPrices:{},   // bmPrices[itemId][T{tier}_{ench}] = price
     volumes:{},    // volumes[itemId][T{tier}_{ench}] = 個/日
     inventory:{},  // inventory[city][materialId][T{tier}_{ench}] = 所持数
+    sellRatios:{}, // sellRatios[itemId][T{tier}_{ench}] = 出品比率(%)。未設定なら15
   };
 }
 
@@ -78,6 +79,7 @@ function loadState(){
       merged.bmPrices = data.bmPrices || {};
       merged.volumes = data.volumes || {};
       merged.inventory = data.inventory || {};
+      merged.sellRatios = data.sellRatios || {};
       return merged;
     }
   }catch(e){ console.error('state load failed', e); }
@@ -127,6 +129,16 @@ function setInventoryQty(city, matId, tier, ench, val){
   saveState();
 }
 
+function getSellRatio(itemId, tier, ench){
+  const v = state.sellRatios[itemId] && state.sellRatios[itemId][key(tier,ench)];
+  return (v === undefined || v === null) ? 15 : v;
+}
+function setSellRatio(itemId, tier, ench, val){
+  state.sellRatios[itemId] = state.sellRatios[itemId] || {};
+  state.sellRatios[itemId][key(tier,ench)] = val;
+  saveState();
+}
+
 function computeCost(item, tier, ench, city){
   return MATERIALS.reduce((sum, m)=>{
     const qty = item.materials[m.id] || 0;
@@ -136,6 +148,17 @@ function computeCost(item, tier, ench, city){
 }
 
 function taxRate(){ return state.settings.premium ? 4 : 8; }
+
+// 利益率(%)に応じた色（プラスが大きいほど明るい緑、マイナスが大きいほど明るい赤）
+function rateColor(rate){
+  if(rate >= 0){
+    const t = Math.max(0, Math.min(1, rate/150));
+    return `hsl(142, 70%, ${40 + t*34}%)`;
+  }else{
+    const t = Math.max(0, Math.min(1, -rate/100));
+    return `hsl(0, 78%, ${38 + t*32}%)`;
+  }
+}
 
 /* ---------------------------------------------------------------------
    入力欄でEnterキーを押すと次の欄にフォーカスを移す（委譲イベントなので
@@ -167,8 +190,13 @@ document.querySelectorAll('.tabbtn').forEach(btn=>{
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     btn.classList.add('active');
     document.getElementById('page-'+btn.dataset.page).classList.add('active');
-    // 計画タブは他タブでの入力を反映するため、開くたびに再計算する
-    if(btn.dataset.page === 'plan') renderPlanPage();
+    // タブを開くたびに、他タブでの入力を反映して再描画する
+    const page = btn.dataset.page;
+    if(page === 'cost') renderCostPage();
+    if(page === 'bm') bmTab.renderAll();
+    if(page === 'volume') volTab.renderAll();
+    if(page === 'plan') renderPlanPage();
+    if(page === 'settings') renderSettingsPage();
   });
 });
 
@@ -281,8 +309,58 @@ function repImageForSubtype(catId, subtype){
   return items.length ? items[0].file : '';
 }
 
+// 装備1個分の入力カードを作る（闇市入力・販売数入力タブ共通）
+// opts: {valueGetter, valueSetter, showProfitRate}
+function buildEquipCard(item, opts){
+  const card = document.createElement('div');
+  card.className = 'equipcard';
+  let hasAny = false;
+  TIERS.forEach(t=>ENCH.forEach(e=>{ if(opts.valueGetter(item.id,t,e) > 0) hasAny = true; }));
+  card.innerHTML = `<h5><img class="colthumb" src="${item.file}" alt="">${item.name}${hasAny?'<span class="hasval">入力済み</span>':''}</h5>`;
+  TIERS.forEach(tier=>{
+    const tg = document.createElement('div');
+    tg.className = 'tiergroup';
+    tg.innerHTML = `<div class="tiergroup-label">T${tier}</div>`;
+    const row = document.createElement('div');
+    row.className = 'enchrow';
+    ENCH.forEach(ench=>{
+      const cell = document.createElement('div');
+      cell.className = 'enchcell';
+      const val = opts.valueGetter(item.id, tier, ench);
+      if(opts.showProfitRate){
+        cell.innerHTML = `<span>.${ench}</span><div class="enchcell-inputrow">
+          <input type="number" min="0" value="${val||''}" placeholder="0">
+          <span class="ratelabel" data-rate></span></div>`;
+      }else{
+        cell.innerHTML = `<span>.${ench}</span><input type="number" min="0" value="${val||''}" placeholder="0">`;
+      }
+      const input = cell.querySelector('input');
+      const rateEl = opts.showProfitRate ? cell.querySelector('[data-rate]') : null;
+      function updateRate(){
+        if(!rateEl) return;
+        const sell = Number(input.value) || 0;
+        const cost = computeCost(item, tier, ench, state.settings.standardCity);
+        if(sell <= 0 || cost <= 0){ rateEl.textContent=''; rateEl.style.color=''; return; }
+        const net = sell * (1 - taxRate()/100);
+        const rate = ((net - cost) / cost) * 100;
+        rateEl.textContent = (rate>=0?'+':'') + Math.round(rate) + '%';
+        rateEl.style.color = rateColor(rate);
+      }
+      input.addEventListener('input', ()=>{
+        opts.valueSetter(item.id, tier, ench, Number(input.value)||0);
+        updateRate();
+      });
+      updateRate();
+      row.appendChild(cell);
+    });
+    tg.appendChild(row);
+    card.appendChild(tg);
+  });
+  return card;
+}
+
 function makeInputTab(opts){
-  // opts: {catListId, subtypeRowId, gridPanelId, searchId, valueGetter, valueSetter}
+  // opts: {catListId, subtypeRowId, gridPanelId, searchId, valueGetter, valueSetter, showProfitRate}
   const nav = { cat: CATS[0].id, subtype: null };
 
   function renderCatList(){
@@ -325,35 +403,6 @@ function makeInputTab(opts){
     });
   }
 
-  function buildEquipCard(item){
-    const card = document.createElement('div');
-    card.className = 'equipcard';
-    let hasAny = false;
-    TIERS.forEach(t=>ENCH.forEach(e=>{ if(opts.valueGetter(item.id,t,e) > 0) hasAny = true; }));
-    card.innerHTML = `<h5><img class="colthumb" src="${item.file}" alt="">${item.name}${hasAny?'<span class="hasval">入力済み</span>':''}</h5>`;
-    TIERS.forEach(tier=>{
-      const tg = document.createElement('div');
-      tg.className = 'tiergroup';
-      tg.innerHTML = `<div class="tiergroup-label">T${tier}</div>`;
-      const row = document.createElement('div');
-      row.className = 'enchrow';
-      ENCH.forEach(ench=>{
-        const cell = document.createElement('div');
-        cell.className = 'enchcell';
-        const val = opts.valueGetter(item.id, tier, ench);
-        cell.innerHTML = `<span>.${ench}</span><input type="number" min="0" value="${val||''}" placeholder="0">`;
-        const input = cell.querySelector('input');
-        input.addEventListener('input', ()=>{
-          opts.valueSetter(item.id, tier, ench, Number(input.value)||0);
-        });
-        row.appendChild(cell);
-      });
-      tg.appendChild(row);
-      card.appendChild(tg);
-    });
-    return card;
-  }
-
   function renderGrid(){
     const panel = document.getElementById(opts.gridPanelId);
     panel.innerHTML = '';
@@ -371,7 +420,7 @@ function makeInputTab(opts){
     if(items.length === 0){
       wrap.innerHTML = '<div class="empty-hint">該当する装備がありません。</div>';
     }else{
-      items.forEach(item=> wrap.appendChild(buildEquipCard(item)));
+      items.forEach(item=> wrap.appendChild(buildEquipCard(item, opts)));
     }
     panel.appendChild(wrap);
   }
@@ -383,11 +432,140 @@ function makeInputTab(opts){
 
 const bmTab = makeInputTab({
   catListId:'bmCategoryList', subtypeRowId:'bmSubtypeRow', gridPanelId:'bmGridPanel', searchId:'bmSearch',
-  valueGetter:getBmPrice, valueSetter:setBmPrice,
+  valueGetter:getBmPrice, valueSetter:setBmPrice, showProfitRate:true,
 });
-const volTab = makeInputTab({
+
+/* ---------------------------------------------------------------------
+   販売数入力タブ：片手武器／両手武器／頭・靴防具／胴防具／オフハンド
+   の5グループでまとめて入力する
+--------------------------------------------------------------------- */
+// 基本武器（destiny盤の最初の分岐）のうち片手武器はこの13種のみ。
+// それ以外の武器（Great系・二刀流系・Pike/Glaive等）と、
+// Bow系・War Gloves(フィスト)系・Quarterstaff系は全て両手武器。
+const ONE_HANDED_WEAPON_NAMES = new Set([
+  'Broadsword','Battleaxe','Mace','Hammer','Light Crossbow','Spear',
+  'Nature Staff','Dagger','Fire Staff','Holy Staff','Arcane Staff',
+  'Frost Staff','Cursed Staff',
+]);
+
+const VOL_GROUPS = [
+  {id:'weapon1h', label:'片手武器',     ic:'🗡️'},
+  {id:'weapon2h', label:'両手武器',     ic:'⚔️'},
+  {id:'headfoot', label:'頭・靴防具',   ic:'🪖'},
+  {id:'chest',    label:'胴防具',       ic:'👕'},
+  {id:'offhand',  label:'オフハンド',   ic:'🛡️'},
+];
+
+function volGroupOf(item){
+  if(item.category === 'weapon'){
+    return ONE_HANDED_WEAPON_NAMES.has(item.name) ? 'weapon1h' : 'weapon2h';
+  }
+  if(item.category === 'head' || item.category === 'foot') return 'headfoot';
+  return item.category; // 'chest' or 'offhand'
+}
+function itemsInVolGroup(groupId){
+  return ITEMS.filter(i=>volGroupOf(i)===groupId);
+}
+function volSubKey(item){
+  if(item.category==='head' || item.category==='foot') return item.category+':'+item.subtype;
+  return item.subtype;
+}
+function volSubLabel(item){
+  if(item.category==='head') return '頭:'+(SUBTYPE_LABELS[item.subtype]||item.subtype);
+  if(item.category==='foot') return '足:'+(SUBTYPE_LABELS[item.subtype]||item.subtype);
+  return SUBTYPE_LABELS[item.subtype] || item.subtype;
+}
+function volSubtypesInGroup(groupId){
+  const items = itemsInVolGroup(groupId);
+  let orderKeys;
+  if(groupId==='weapon1h' || groupId==='weapon2h') orderKeys = SUBTYPE_ORDER.weapon.slice();
+  else if(groupId==='headfoot') orderKeys = ['head:plate','head:leather','head:cloth','foot:plate','foot:leather','foot:cloth'];
+  else if(groupId==='chest') orderKeys = SUBTYPE_ORDER.chest.slice();
+  else orderKeys = SUBTYPE_ORDER.offhand.slice();
+
+  const out = [];
+  orderKeys.forEach(k=>{
+    const matches = items.filter(i=>volSubKey(i)===k);
+    if(matches.length) out.push({key:k, label:volSubLabel(matches[0]), items:matches});
+  });
+  return out;
+}
+
+function makeVolumeTab(opts){
+  // opts: {catListId, subtypeRowId, gridPanelId, searchId, valueGetter, valueSetter}
+  const nav = { group: VOL_GROUPS[0].id, subKey: null };
+
+  function renderGroupList(){
+    const box = document.getElementById(opts.catListId);
+    box.innerHTML = '';
+    VOL_GROUPS.forEach(g=>{
+      const count = itemsInVolGroup(g.id).length;
+      if(count === 0) return;
+      const btn = document.createElement('button');
+      btn.className = 'catbtn' + (nav.group===g.id ? ' active' : '');
+      btn.innerHTML = `<span class="ic">${g.ic}</span>${g.label}<span class="catcount">${count}</span>`;
+      btn.addEventListener('click', ()=>{
+        nav.group = g.id;
+        nav.subKey = null;
+        document.getElementById(opts.searchId).value = '';
+        renderGroupList(); renderSubRow(); renderGrid();
+      });
+      box.appendChild(btn);
+    });
+  }
+
+  function renderSubRow(){
+    const row = document.getElementById(opts.subtypeRowId);
+    row.innerHTML = '';
+    const subs = volSubtypesInGroup(nav.group);
+    if(!nav.subKey || !subs.some(s=>s.key===nav.subKey)) nav.subKey = subs.length ? subs[0].key : null;
+    subs.forEach(s=>{
+      const icon = document.createElement('div');
+      icon.className = 'subtypeicon' + (nav.subKey===s.key ? ' active' : '');
+      icon.innerHTML = `<img src="${s.items[0].file}" alt="">
+        <span>${s.label}</span>
+        <span class="micount">${s.items.length}</span>`;
+      icon.addEventListener('click', ()=>{
+        nav.subKey = s.key;
+        document.getElementById(opts.searchId).value = '';
+        renderSubRow(); renderGrid();
+      });
+      row.appendChild(icon);
+    });
+  }
+
+  function renderGrid(){
+    const panel = document.getElementById(opts.gridPanelId);
+    panel.innerHTML = '';
+    const q = document.getElementById(opts.searchId).value.trim().toLowerCase();
+    let items;
+    if(q){
+      items = ITEMS.filter(i=>i.name.toLowerCase().includes(q));
+    }else if(nav.subKey){
+      const subs = volSubtypesInGroup(nav.group);
+      const found = subs.find(s=>s.key===nav.subKey);
+      items = found ? found.items : [];
+    }else{
+      items = [];
+    }
+    const wrap = document.createElement('div');
+    wrap.className = 'equipgridpanel';
+    if(items.length === 0){
+      wrap.innerHTML = '<div class="empty-hint">該当する装備がありません。</div>';
+    }else{
+      items.forEach(item=> wrap.appendChild(buildEquipCard(item, opts)));
+    }
+    panel.appendChild(wrap);
+  }
+
+  document.getElementById(opts.searchId).addEventListener('input', renderGrid);
+
+  return { renderAll(){ renderGroupList(); renderSubRow(); renderGrid(); } };
+}
+
+const volTab = makeVolumeTab({
   catListId:'volCategoryList', subtypeRowId:'volSubtypeRow', gridPanelId:'volGridPanel', searchId:'volSearch',
-  valueGetter:getVolume, valueSetter:setVolume,
+  valueGetter:getVolume, valueSetter:setVolume, showProfitRate:false,
 });
 enableEnterNav(document.getElementById('bmGridPanel'));
 enableEnterNav(document.getElementById('volGridPanel'));
@@ -406,15 +584,17 @@ function buildPlanRows(){
     TIERS.forEach(tier=>{
       ENCH.forEach(ench=>{
         const sell = getBmPrice(item.id, tier, ench);
-        if(sell <= 0) return; // 闇市入力が済んでいる組み合わせのみ対象
-        const volume = getVolume(item.id, tier, ench);
         const cost = computeCost(item, tier, ench, city);
+        // 原価・売値の両方が入力されている組み合わせのみ対象
+        if(sell <= 0 || cost <= 0) return;
+        const volume = getVolume(item.id, tier, ench);
+        const ratio = getSellRatio(item.id, tier, ench);
         const net = sell * (1 - tax/100);
         const profitUnit = net - cost;
-        const qtyPerDay = Math.floor(volume * 0.15);
+        const qtyPerDay = Math.floor(volume * (ratio/100));
         const qty = qtyPerDay * days; // 「何日分作るか」は単純な掛け算
         const profitTotal = profitUnit * qty;
-        rows.push({item, tier, ench, sell, volume, cost, net, profitUnit, qtyPerDay, qty, profitTotal});
+        rows.push({item, tier, ench, sell, volume, cost, net, profitUnit, ratio, qtyPerDay, qty, profitTotal});
       });
     });
   });
@@ -554,8 +734,8 @@ function renderPlanPage(){
   const allRows = buildPlanRows();
   const totalProfit = allRows.reduce((s,r)=>s + r.profitTotal, 0);
   document.getElementById('planSummary').innerHTML = `
-    <div class="sumcard"><span class="sk">売値を登録した組み合わせ</span><span class="sv">${allRows.length}</span></div>
-    <div class="sumcard"><span class="sk">推奨出品数の合計利益</span><span class="sv violet">${fmt(totalProfit)}</span></div>
+    <div class="sumcard"><span class="sk">原価・売値とも入力済みの組み合わせ</span><span class="sv">${allRows.length}</span></div>
+    <div class="sumcard"><span class="sk">推奨作成数の合計利益</span><span class="sv violet">${fmt(totalProfit)}</span></div>
     <div class="sumcard"><span class="sk">標準都市 / 税率 / 生産日数</span><span class="sv">${CITY_LABELS_JA[state.settings.standardCity]} / ${taxRate()}% / ${state.settings.days||1}日</span></div>
   `;
 
@@ -564,12 +744,12 @@ function renderPlanPage(){
 
   const wrap = document.getElementById('planTableWrap');
   if(rows.length === 0){
-    wrap.innerHTML = '<div class="empty-hint">「闇市入力」で売値を登録すると、ここに計画が表示されます。</div>';
+    wrap.innerHTML = '<div class="empty-hint">「原価入力」の素材単価と「闇市入力」の売値が両方そろうと、ここに計画が表示されます。</div>';
     return;
   }
   let html = `<div class="tablewrap"><table class="plantable"><thead><tr>
     <th>装備</th><th>原価</th><th>闇市売値</th><th>手取り(税引後)</th>
-    <th>1日の消化数</th><th>推奨作成数</th><th>個あたり利益</th><th>合計利益</th>
+    <th>1日の消化数</th><th>出品比率</th><th>推奨作成数</th><th>個あたり利益</th><th>合計利益</th>
   </tr></thead><tbody>`;
   rows.forEach(r=>{
     html += `<tr>
@@ -579,6 +759,8 @@ function renderPlanPage(){
       <td>${fmt(r.sell)}</td>
       <td>${fmt(r.net)}</td>
       <td>${fmt(r.volume)}</td>
+      <td><input type="number" class="ratio-input" min="1" max="100" value="${r.ratio}"
+        data-item-id="${r.item.id}" data-tier="${r.tier}" data-ench="${r.ench}">%</td>
       <td class="plan-qty">${fmt(r.qty)}</td>
       <td class="${r.profitUnit<0?'plan-profit neg':'plan-profit'}">${fmt(r.profitUnit)}</td>
       <td class="${r.profitTotal<0?'plan-profit neg':'plan-profit'}">${fmt(r.profitTotal)}</td>
@@ -586,6 +768,13 @@ function renderPlanPage(){
   });
   html += '</tbody></table></div>';
   wrap.innerHTML = html;
+  wrap.querySelectorAll('.ratio-input').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      const v = Math.max(1, Math.min(100, Number(inp.value) || 15));
+      setSellRatio(inp.dataset.itemId, Number(inp.dataset.tier), Number(inp.dataset.ench), v);
+      renderPlanPage();
+    });
+  });
 }
 
 ['planCategory','planTier','planSort'].forEach(id=>{
