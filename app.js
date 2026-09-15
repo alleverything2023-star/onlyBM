@@ -57,12 +57,13 @@ const LS_KEY = 'bm_planner_state_v1';
 
 function defaultState(){
   return {
-    settings:{ standardCity:'Lymhurst', premium:true, days:1 },
+    settings:{ standardCity:'Lymhurst', premium:true, budget:0 },
     matPrices:{},  // matPrices[city][materialId][T{tier}_{ench}] = price
     bmPrices:{},   // bmPrices[itemId][T{tier}_{ench}] = price
     volumes:{},    // volumes[itemId][T{tier}_{ench}] = 個/日
     inventory:{},  // inventory[city][materialId][T{tier}_{ench}] = 所持数
     sellRatios:{}, // sellRatios[itemId][T{tier}_{ench}] = 出品比率(%)。未設定なら15
+    planSelected:{}, // planSelected[itemId|T{tier}_{ench}] = true
   };
 }
 
@@ -75,11 +76,13 @@ function loadState(){
       const data = JSON.parse(raw);
       const merged = Object.assign(defaultState(), data);
       merged.settings = Object.assign(defaultState().settings, data.settings || {});
+      if(merged.settings.budget === undefined) merged.settings.budget = 0;
       merged.matPrices = data.matPrices || {};
       merged.bmPrices = data.bmPrices || {};
       merged.volumes = data.volumes || {};
       merged.inventory = data.inventory || {};
       merged.sellRatios = data.sellRatios || {};
+      merged.planSelected = data.planSelected || {};
       return merged;
     }
   }catch(e){ console.error('state load failed', e); }
@@ -191,12 +194,31 @@ function setSellRatio(itemId, tier, ench, val){
   saveState();
 }
 
-function computeCost(item, tier, ench, city){
+function bonusCityForItem(item){
+  return item.bonusCity || null;
+}
+
+// Production bonus is +18% in a normal city, +15% specialty in the item's bonus city.
+// Return rate is bonus / (1 + bonus), so normal city = 15.25%, bonus city = 24.81%.
+function productionBonusLPB(item){
+  return bonusCityForItem(item) ? 0.33 : 0.18;
+}
+function rrrForItem(item){
+  const bonus = productionBonusLPB(item);
+  return bonus / (1 + bonus);
+}
+
+function computeGrossCost(item, tier, ench, city){
   return MATERIALS.reduce((sum, m)=>{
     const qty = item.materials[m.id] || 0;
     if(qty <= 0) return sum;
     return sum + qty * getMatPrice(city, m.id, tier, ench);
   }, 0);
+}
+
+function computeCost(item, tier, ench, city){
+  const gross = computeGrossCost(item, tier, ench, city);
+  return gross * (1 - rrrForItem(item));
 }
 
 function taxRate(){ return state.settings.premium ? 4 : 8; }
@@ -651,26 +673,44 @@ enableEnterNav(document.getElementById('volGridPanel'));
 --------------------------------------------------------------------- */
 function fmt(n){ return Math.round(n).toLocaleString('ja-JP'); }
 
+function planSelectionKey(itemId, tier, ench){
+  return `${itemId}|T${tier}_${ench}`;
+}
+
+function isPlanSelected(itemId, tier, ench){
+  const map = state.planSelected || {};
+  return !!map[planSelectionKey(itemId,tier,ench)];
+}
+
+function setPlanSelected(itemId, tier, ench, selected){
+  state.planSelected = state.planSelected || {};
+  const k = planSelectionKey(itemId,tier,ench);
+  if(selected) state.planSelected[k] = true;
+  else delete state.planSelected[k];
+  saveState();
+}
+
 function buildPlanRows(){
   const city = state.settings.standardCity;
   const tax = taxRate();
-  const days = Math.max(1, Number(state.settings.days) || 1);
   const rows = [];
   ITEMS.forEach(item=>{
     TIERS.forEach(tier=>{
       ENCH.forEach(ench=>{
         const sell = getBmPrice(item.id, tier, ench);
-        const cost = computeCost(item, tier, ench, city);
-        // 原価・売値の両方が入力されている組み合わせのみ対象
-        if(sell <= 0 || cost <= 0) return;
+        const grossCost = computeGrossCost(item, tier, ench, city);
+        const cost = grossCost * (1 - rrrForItem(item));
+        if(sell <= 0 || grossCost <= 0) return;
         const volume = getVolume(volumeKeyForItem(item), tier, ench);
         const ratio = getSellRatio(item.id, tier, ench);
         const net = sell * (1 - tax/100);
         const profitUnit = net - cost;
-        const qtyPerDay = Math.floor(volume * (ratio/100));
-        const qty = qtyPerDay * days; // 「何日分作るか」は単純な掛け算
+        const profitRate = cost > 0 ? (profitUnit / cost) * 100 : 0;
+        const maxQty = Math.floor(volume * (ratio/100));
+        const selected = isPlanSelected(item.id,tier,ench);
+        const qty = selected ? maxQty : 0;
         const profitTotal = profitUnit * qty;
-        rows.push({item, tier, ench, sell, volume, cost, net, profitUnit, ratio, qtyPerDay, qty, profitTotal});
+        rows.push({item, tier, ench, sell, volume, grossCost, cost, net, profitUnit, profitRate, ratio, maxQty, qty, profitTotal, selected, bonusCity:bonusCityForItem(item), rrr:rrrForItem(item)});
       });
     });
   });
@@ -785,8 +825,8 @@ function renderMaterialsSummary(rows){
 
 function renderPlanPage(){
   renderPlanFilters();
-  const daysInput = document.getElementById('planDays');
-  daysInput.value = state.settings.days || 1;
+  const budgetInput = document.getElementById('planBudget');
+  budgetInput.value = state.settings.budget || '';
   let rows = buildPlanRows();
 
   const cat = document.getElementById('planCategory').value;
@@ -799,20 +839,28 @@ function renderPlanPage(){
   if(q) rows = rows.filter(r=>r.item.name.toLowerCase().includes(q));
 
   const sorters = {
+    profitRate:(a,b)=>b.profitRate-a.profitRate,
     profitTotal:(a,b)=>b.profitTotal-a.profitTotal,
     profitUnit:(a,b)=>b.profitUnit-a.profitUnit,
     volume:(a,b)=>b.volume-a.volume,
-    qty:(a,b)=>b.qty-a.qty,
+    qty:(a,b)=>b.maxQty-a.maxQty,
   };
-  rows.sort(sorters[sortKey] || sorters.profitTotal);
+  rows.sort(sorters[sortKey] || sorters.profitRate);
 
-  // summary (フィルタ前の全登録データを対象に集計)
   const allRows = buildPlanRows();
-  const totalProfit = allRows.reduce((s,r)=>s + r.profitTotal, 0);
+  const selectedRows = allRows.filter(r=>r.selected && r.maxQty>0);
+  const dailyCost = selectedRows.reduce((s,r)=>s + r.cost*r.maxQty, 0);
+  const dailyProfit = selectedRows.reduce((s,r)=>s + r.profitUnit*r.maxQty, 0);
+  const budget = Math.max(0, Number(state.settings.budget) || 0);
+  const days = dailyCost > 0 && budget > 0 ? budget/dailyCost : 0;
+  const selectedCount = selectedRows.length;
   document.getElementById('planSummary').innerHTML = `
-    <div class="sumcard"><span class="sk">原価・売値とも入力済みの組み合わせ</span><span class="sv">${allRows.length}</span></div>
-    <div class="sumcard"><span class="sk">推奨作成数の合計利益</span><span class="sv violet">${fmt(totalProfit)}</span></div>
-    <div class="sumcard"><span class="sk">標準都市 / 税率 / 生産日数</span><span class="sv">${CITY_LABELS_JA[state.settings.standardCity]} / ${taxRate()}% / ${state.settings.days||1}日</span></div>
+    <div class="sumcard"><span class="sk">候補（原価・売値入力済み）</span><span class="sv">${allRows.length}</span></div>
+    <div class="sumcard"><span class="sk">選択中の種類</span><span class="sv">${selectedCount}</span></div>
+    <div class="sumcard"><span class="sk">1日あたり必要原価</span><span class="sv">${fmt(dailyCost)}</span></div>
+    <div class="sumcard"><span class="sk">予算</span><span class="sv violet">${fmt(budget)}</span></div>
+    <div class="sumcard"><span class="sk">予算で生産できる日数</span><span class="sv">${days ? days.toFixed(2) : '—'}日</span></div>
+    <div class="sumcard"><span class="sk">1日あたり利益</span><span class="sv ${dailyProfit<0?'neg':''}">${fmt(dailyProfit)}</span></div>
   `;
 
   renderCategorySummary(rows);
@@ -820,30 +868,40 @@ function renderPlanPage(){
 
   const wrap = document.getElementById('planTableWrap');
   if(rows.length === 0){
-    wrap.innerHTML = '<div class="empty-hint">「原価入力」の素材単価と「闇市入力」の売値が両方そろうと、ここに計画が表示されます。</div>';
+    wrap.innerHTML = '<div class="empty-hint">「原価入力」の素材単価と「闇市入力」の売値が両方そろうと、ここに候補が表示されます。</div>';
     return;
   }
   let html = `<div class="tablewrap"><table class="plantable"><thead><tr>
-    <th>装備</th><th>原価</th><th>闇市売値</th><th>手取り(税引後)</th>
-    <th>1日の消化数</th><th>出品比率</th><th>推奨作成数</th><th>個あたり利益</th><th>合計利益</th>
+    <th>採用</th><th>装備</th><th>ボーナス都市</th><th>RRR</th><th>実質原価</th><th>闇市売値</th><th>手取り</th>
+    <th>1日の消化数</th><th>出品比率</th><th>最高作成数</th><th>個あたり利益</th><th>利益率</th>
   </tr></thead><tbody>`;
   rows.forEach(r=>{
     html += `<tr>
+      <td><input type="checkbox" class="plan-select" ${r.selected?'checked':''}
+        data-item-id="${r.item.id}" data-tier="${r.tier}" data-ench="${r.ench}"></td>
       <td><div class="plan-item"><img src="${r.item.file}" alt="">
         <span class="pname">${r.item.name}</span><span class="ptier">T${r.tier}.${r.ench}</span></div></td>
+      <td>${r.bonusCity ? CITY_LABELS_JA[r.bonusCity] : 'なし'}</td>
+      <td>${(r.rrr*100).toFixed(1)}%</td>
       <td>${fmt(r.cost)}</td>
       <td>${fmt(r.sell)}</td>
       <td>${fmt(r.net)}</td>
       <td>${fmt(r.volume)}</td>
       <td><input type="number" class="ratio-input" min="1" max="100" value="${r.ratio}"
         data-item-id="${r.item.id}" data-tier="${r.tier}" data-ench="${r.ench}">%</td>
-      <td class="plan-qty">${fmt(r.qty)}</td>
+      <td class="plan-qty">${fmt(r.maxQty)}</td>
       <td class="${r.profitUnit<0?'plan-profit neg':'plan-profit'}">${fmt(r.profitUnit)}</td>
-      <td class="${r.profitTotal<0?'plan-profit neg':'plan-profit'}">${fmt(r.profitTotal)}</td>
+      <td class="${r.profitRate<0?'plan-profit neg':'plan-profit'}">${r.profitRate.toFixed(1)}%</td>
     </tr>`;
   });
   html += '</tbody></table></div>';
   wrap.innerHTML = html;
+  wrap.querySelectorAll('.plan-select').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      setPlanSelected(inp.dataset.itemId, Number(inp.dataset.tier), Number(inp.dataset.ench), inp.checked);
+      renderPlanPage();
+    });
+  });
   wrap.querySelectorAll('.ratio-input').forEach(inp=>{
     inp.addEventListener('change', ()=>{
       const v = Math.max(1, Math.min(100, Number(inp.value) || 15));
@@ -857,9 +915,9 @@ function renderPlanPage(){
   document.getElementById(id).addEventListener('change', renderPlanPage);
 });
 document.getElementById('planSearch').addEventListener('input', renderPlanPage);
-document.getElementById('planDays').addEventListener('input', ()=>{
-  const v = Math.max(1, Number(document.getElementById('planDays').value) || 1);
-  state.settings.days = v;
+document.getElementById('planBudget').addEventListener('input', ()=>{
+  const v = Math.max(0, Number(document.getElementById('planBudget').value) || 0);
+  state.settings.budget = v;
   saveState();
   renderPlanPage();
 });
