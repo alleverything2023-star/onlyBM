@@ -200,7 +200,10 @@ body{
 .equipcard{border:1px solid var(--border);border-radius:12px;padding:14px 16px;background:#141020;}
 .equipcard h5{display:flex;align-items:center;gap:9px;margin:0 0 10px;font-size:13px;color:var(--text);}
 .equipcard .colthumb{width:26px;height:26px;object-fit:contain;background:#100d18;border:1px solid var(--border);border-radius:6px;padding:2px;flex-shrink:0;}
-.equipcard .hasval{margin-left:auto;font-size:9.5px;color:var(--green);background:#123420;padding:1px 7px;border-radius:8px;}
+.equipcard .hcardright{margin-left:auto;display:flex;align-items:center;gap:6px;}
+.equipcard .hasval{font-size:9.5px;color:var(--green);background:#123420;padding:1px 7px;border-radius:8px;white-space:nowrap;}
+.equipcard .itemdelbtn{font-size:9.5px;line-height:1;color:#ff9a9a;background:#3a1414;border:1px solid #5a2020;padding:2px 7px;border-radius:8px;cursor:pointer;white-space:nowrap;}
+.equipcard .itemdelbtn:hover{background:#5a1c1c;color:#ffd2d2;}
 
 /* ===== 計画タブ ===== */
 .plansummary{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;}
