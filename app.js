@@ -390,7 +390,21 @@ function buildEquipCard(item, opts){
   card.className = 'equipcard';
   let hasAny = false;
   TIERS.forEach(t=>ENCH.forEach(e=>{ if(opts.valueGetter(item.id,t,e) > 0) hasAny = true; }));
-  card.innerHTML = `<h5><img class="colthumb" src="${item.file}" alt="">${item.name}${hasAny?'<span class="hasval">入力済み</span>':''}</h5>`;
+  const rightBits = hasAny
+    ? `${opts.clearAll ? '<button type="button" class="itemdelbtn" title="この装備のデータを削除">🗑 削除</button>' : ''}<span class="hasval">入力済み</span>`
+    : '';
+  card.innerHTML = `<h5><img class="colthumb" src="${item.file}" alt="">${item.name}<span class="hcardright">${rightBits}</span></h5>`;
+  if(hasAny && opts.clearAll){
+    const delBtn = card.querySelector('.itemdelbtn');
+    delBtn.addEventListener('click', ()=>{
+      if(!confirm(`${item.name} のデータをすべて削除します。よろしいですか？`)) return;
+      opts.clearAll(item.id);
+      card.querySelectorAll('input[type="number"]').forEach(inp=>{ inp.value = ''; });
+      card.querySelectorAll('[data-rate]').forEach(r=>{ r.textContent = ''; r.style.color = ''; });
+      const right = card.querySelector('.hcardright');
+      if(right) right.innerHTML = '';
+    });
+  }
   TIERS.forEach(tier=>{
     const tg = document.createElement('div');
     tg.className = 'tiergroup';
@@ -507,6 +521,7 @@ function makeInputTab(opts){
 const bmTab = makeInputTab({
   catListId:'bmCategoryList', subtypeRowId:'bmSubtypeRow', gridPanelId:'bmGridPanel', searchId:'bmSearch',
   valueGetter:getBmPrice, valueSetter:setBmPrice, showProfitRate:true,
+  clearAll:(itemId)=>{ delete state.bmPrices[itemId]; saveState(); renderPlanPage(); },
 });
 
 /* ---------------------------------------------------------------------
@@ -664,6 +679,7 @@ function makeVolumeTab(opts){
 const volTab = makeVolumeTab({
   catListId:'volCategoryList', subtypeRowId:'volSubtypeRow', gridPanelId:'volGridPanel', searchId:'volSearch',
   valueGetter:getVolume, valueSetter:setVolume, showProfitRate:false,
+  clearAll:(itemId)=>{ delete state.volumes[itemId]; saveState(); renderPlanPage(); },
 });
 enableEnterNav(document.getElementById('bmGridPanel'));
 enableEnterNav(document.getElementById('volGridPanel'));
